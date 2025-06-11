@@ -1,0 +1,22 @@
+<configuration>
+
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Устанавливаем уровень логирования для нашего приложения -->
+    <!-- Можно поставить DEBUG для более детальных логов во время разработки -->
+    <logger name="com.example.imagetagger" level="INFO" />
+
+    <!-- Уровень логирования для библиотек, например, Hibernate или Spring, если бы они были -->
+    <!-- <logger name="org.hibernate" level="INFO" /> -->
+    <!-- <logger name="org.springframework" level="INFO" /> -->
+
+    <!-- Корневой логгер -->
+    <root level="WARN"> <!-- По умолчанию WARN для всего остального, чтобы не засорять консоль -->
+        <appender-ref ref="STDOUT" />
+    </root>
+
+</configuration>
