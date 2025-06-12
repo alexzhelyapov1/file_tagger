@@ -357,6 +357,12 @@ import java.util.stream.Collectors;
 
 import javafx.fxml.FXMLLoader; // Добавить этот импорт
 import javafx.scene.Parent;    // Добавить этот импорт
+import javafx.concurrent.Task; // Добавить этот импорт
+import javafx.scene.control.Label; // Добавить этот импорт
+import javafx.scene.control.Menu;    // Добавить этот импорт
+import javafx.scene.control.ProgressIndicator; // Добавить этот импорт
+import com.example.imagetagger.ui.task.ScanDirectoryTask; // Добавить импорт
+import javafx.beans.binding.Bindings;
 
 public class MainViewController {
 
@@ -364,10 +370,13 @@ public class MainViewController {
 
     @FXML private BorderPane rootPane;
     @FXML private ImageView mainImageView;
-    @FXML private StackPane imageViewHolder; // Родительский контейнер для ImageView
+    @FXML private StackPane imageViewHolder; 
     @FXML private Button previousImageButton;
     @FXML private Button nextImageButton;
-    @FXML private MenuItem openFolderMenuItem; // Если нужно будет к нему обращаться
+    @FXML private MenuItem openFolderMenuItem; 
+    @FXML private Label statusBarLabel; 
+    @FXML private ProgressIndicator scanProgressIndicator; 
+    @FXML private Menu fileMenu;
 
     private FileScannerService fileScannerService;
     private TrackedFileService trackedFileService; // Добавить это поле
@@ -377,6 +386,7 @@ public class MainViewController {
     private RightToolbarController rightToolbarController;
     private LeftToolbarController leftToolbarController;
     private TrackedFile currentlyDisplayedFile;
+    private final javafx.beans.property.IntegerProperty currentImageIndexProperty = new javafx.beans.property.SimpleIntegerProperty(-1);
 
     private File currentOpenDirectory;
     // Добавить поле для хранения активных тегов фильтрации
@@ -397,26 +407,31 @@ public class MainViewController {
         mainImageView.fitWidthProperty().bind(imageViewHolder.widthProperty());
         mainImageView.fitHeightProperty().bind(imageViewHolder.heightProperty());
 
-        loadLeftToolbar(); // <<--- ДОБАВИТЬ ВЫЗОВ
+        loadLeftToolbar();
         loadRightToolbar();
         
         if (rightToolbarController != null) {
             rightToolbarController.setServices(this.tagService, this.trackedFileService);
         }
-        if (leftToolbarController != null) { // <<--- ДОБАВИТЬ БЛОК
+        if (leftToolbarController != null) {
             leftToolbarController.setTagService(this.tagService);
             leftToolbarController.setMainViewController(this);
         }
+        // Изначально currentImageList пуст, currentImageIndexProperty.get() будет -1
+        updateStatusBar("Ready. " + currentImageList.size() + " images loaded.");
     }
 
-    private void loadLeftToolbar() { // <<--- ДОБАВИТЬ ЭТОТ МЕТОД
+    private void updateStatusBar(String message) {
+        if (statusBarLabel != null) {
+            Platform.runLater(() -> statusBarLabel.setText(message));
+        }
+    }
+
+    private void loadLeftToolbar() {
         try {
             FXMLLoader loader = new FXMLLoader(getClass().getResource("/com/example/imagetagger/fxml/LeftToolbar.fxml"));
             Parent leftToolbarNode = loader.load();
             leftToolbarController = loader.getController();
-            // leftToolbarController.setMainViewController(this); // Уже делается в initialize
-            // leftToolbarController.setTagService(this.tagService); // Уже делается в initialize
-            
             rootPane.setLeft(leftToolbarNode);
             logger.info("Left toolbar loaded successfully.");
         } catch (Exception e) {
@@ -426,22 +441,13 @@ public class MainViewController {
 
     public void applyTagFilter(Set<Tag> filterTags) {
         logger.info("Tag filter received in MainViewController: {}", filterTags.stream().map(Tag::getName).collect(Collectors.toList()));
-        // Здесь будет логика применения фильтра
-        // 1. Сохранить текущие filterTags
-        // 2. Если currentImageList не пуст (т.е. папка уже была открыта),
-        //    перезагрузить или отфильтровать currentImageList на основе новой папки И этих тегов.
-        //    Для простоты, можно просто перезагрузить из текущей открытой папки с новым фильтром.
-        //    Или, если у нас есть File currentSelectedDirectory, использовать его.
+        this.activeTagFilters = filterTags;
 
-        // Пока что просто выведем лог и сохраним фильтр для будущего использования
-        this.activeTagFilters = filterTags; // Нужно будет объявить поле private Set<Tag> activeTagFilters;
-
-        // Если папка уже открыта, нужно перезагрузить список изображений с учетом фильтра
-        if (this.currentOpenDirectory != null) { // Нужно будет объявить поле private File currentOpenDirectory;
-            loadImagesFromDirectory(this.currentOpenDirectory); // Этот метод нужно будет модифицировать
+        if (this.currentOpenDirectory != null) {
+            loadImagesFromDirectory(this.currentOpenDirectory); 
         } else {
-            // Если папка не открыта, фильтр применится при следующем открытии папки
             logger.debug("No directory open, filter will be applied on next folder open.");
+            updateStatusBar("Filter set. Open a folder to apply.");
         }
     }
 
@@ -449,67 +455,22 @@ public class MainViewController {
         try {
             FXMLLoader loader = new FXMLLoader(getClass().getResource("/com/example/imagetagger/fxml/RightToolbar.fxml"));
             Parent rightToolbarNode = loader.load();
-            rightToolbarController = loader.getController(); // Получаем контроллер правой панели
-            rightToolbarController.setMainViewController(this); // Передаем ссылку на себя
-
-            rootPane.setRight(rightToolbarNode); // Устанавливаем в правую часть BorderPane
+            rightToolbarController = loader.getController(); 
+            rightToolbarController.setMainViewController(this); 
+            rootPane.setRight(rightToolbarNode); 
             logger.info("Right toolbar loaded successfully.");
         } catch (Exception e) {
             logger.error("Failed to load RightToolbar.fxml", e);
         }
     }
 
-    public void refreshTagRelatedViews() {
+    public void refreshTagRelatedViews() { // Переименован из refreshAllTagViews для единообразия
         if (rightToolbarController != null) {
-            rightToolbarController.refreshTagLists();
-        }
-        // Если текущий файл отображается, обновить его теги
-        if (currentlyDisplayedFile != null && rightToolbarController != null) {
-             Optional<TrackedFile> freshFileOpt = trackedFileService.findByPathWithTags(currentlyDisplayedFile.getAbsolutePath());
-             freshFileOpt.ifPresent(file -> {
-                 currentlyDisplayedFile = file; // Обновляем локальную копию
-                 rightToolbarController.setCurrentFile(currentlyDisplayedFile);
-             });
-        }
-    }
-
-    public void handleGlobalTagDeleted(Tag deletedTag) {
-        logger.info("MainViewController notified of global tag deletion: {}", deletedTag.getName());
-        
-        // Обновляем список тегов для фильтрации на левой панели
-        if (leftToolbarController != null) {
-            leftToolbarController.refreshAvailableTags();
-        }
-
-        // Обновляем текущий активный фильтр, если удаленный тег был в нем
-        if (activeTagFilters != null && activeTagFilters.contains(deletedTag)) {
-            activeTagFilters.remove(deletedTag);
-            // Если папка открыта, перезагружаем/перефильтровываем список
-            if (this.currentOpenDirectory != null) {
-                loadImagesFromDirectory(this.currentOpenDirectory);
-            }
-        }
-        
-        // Обновляем теги текущего отображаемого файла (это уже делается в RightToolbarController,
-        // но для согласованности можно и здесь)
-        if (currentlyDisplayedFile != null && currentlyDisplayedFile.getTags().contains(deletedTag)) {
-            currentlyDisplayedFile.removeTag(deletedTag);
-             if (rightToolbarController != null) {
-                 // RightToolbarController сам обновит свой список currentImageTagsList
-                 // и возможно вызовет setCurrentFile, если это необходимо
-                 rightToolbarController.refreshTagLists(); // Обновит и "все теги" и "теги картинки"
-             }
-        }
-    }
-
-    public void refreshAllTagViews() {
-        if (rightToolbarController != null) {
-            rightToolbarController.refreshTagLists(); // Обновляет теги на правой панели
+            rightToolbarController.refreshTagLists(); 
         }
         if (leftToolbarController != null) {
-            leftToolbarController.refreshAvailableTags(); // Обновляет теги на левой панели
+            leftToolbarController.refreshAvailableTags(); 
         }
-        // Если текущий файл отображается, обновить его теги (на правой панели это уже должно было произойти)
         if (currentlyDisplayedFile != null && rightToolbarController != null) {
              Optional<TrackedFile> freshFileOpt = trackedFileService.findByPathWithTags(currentlyDisplayedFile.getAbsolutePath());
              freshFileOpt.ifPresent(file -> {
@@ -517,11 +478,35 @@ public class MainViewController {
                  rightToolbarController.setCurrentFile(currentlyDisplayedFile);
              });
         }
-        // Переприменить фильтр, если он активен и открыта папка
-        if (currentOpenDirectory != null && activeTagFilters != null && !activeTagFilters.isEmpty()) {
+        if (currentOpenDirectory != null && (activeTagFilters != null && !activeTagFilters.isEmpty())) { // Проверка, что фильтр не пуст
+            loadImagesFromDirectory(currentOpenDirectory);
+        } else if (currentOpenDirectory != null) { // Если фильтр пуст, но папка открыта, тоже перезагружаем (на случай если файлы изменились)
             loadImagesFromDirectory(currentOpenDirectory);
         }
     }
+
+    public void handleGlobalTagDeleted(Tag deletedTag) {
+        logger.info("MainViewController notified of global tag deletion: {}", deletedTag.getName());
+        
+        if (leftToolbarController != null) {
+            leftToolbarController.refreshAvailableTags();
+        }
+
+        if (activeTagFilters != null && activeTagFilters.contains(deletedTag)) {
+            activeTagFilters.remove(deletedTag);
+            if (this.currentOpenDirectory != null) {
+                loadImagesFromDirectory(this.currentOpenDirectory);
+            }
+        }
+        
+        if (currentlyDisplayedFile != null && currentlyDisplayedFile.getTags().contains(deletedTag)) {
+            currentlyDisplayedFile.removeTag(deletedTag);
+             if (rightToolbarController != null) {
+                 rightToolbarController.refreshTagLists(); 
+             }
+        }
+    }
+
 
     @FXML
     private void handleOpenFolder() {
@@ -532,33 +517,89 @@ public class MainViewController {
 
         if (selectedDirectory != null) {
             logger.info("Folder selected: {}", selectedDirectory.getAbsolutePath());
-            this.currentOpenDirectory = selectedDirectory; // Сохраняем выбранную папку
-            loadImagesFromDirectory(selectedDirectory);
+            loadImagesFromDirectory(selectedDirectory); // currentOpenDirectory будет установлен внутри
         } else {
             logger.info("No folder selected.");
         }
     }
 
     private void loadImagesFromDirectory(File directory) {
-        // Логика получения списка файлов от FileScannerService должна остаться прежней
-        // FileScannerService по-прежнему возвращает ВСЕ поддерживаемые файлы из папки
-        List<TrackedFile> allFilesInDirectory = fileScannerService.scanDirectoryForImages(directory);
+        if (directory == null || !directory.isDirectory()) {
+            logger.warn("Cannot load images, invalid directory provided: {}", directory);
+            updateStatusBar("Invalid directory selected.");
+            return;
+        }
+        this.currentOpenDirectory = directory; 
 
+        ScanDirectoryTask scanTask = new ScanDirectoryTask(fileScannerService, directory);
+
+        scanTask.messageProperty().addListener((obs, oldMsg, newMsg) -> updateStatusBar(newMsg));
+        
+        scanProgressIndicator.visibleProperty().bind(scanTask.runningProperty());
+        openFolderMenuItem.disableProperty().bind(scanTask.runningProperty());
+        fileMenu.disableProperty().bind(scanTask.runningProperty()); 
+        
+        // Отвязываем старые биндинги перед установкой новых, чтобы избежать конфликтов
+        previousImageButton.disableProperty().unbind();
+        nextImageButton.disableProperty().unbind();
+
+        // Новые биндинги, учитывающие состояние scanTask
+        previousImageButton.disableProperty().bind(scanTask.runningProperty().or(
+            Bindings.createBooleanBinding(() -> currentImageList.isEmpty() || currentImageIndexProperty.get() <= 0,
+                                            currentImageList, currentImageIndexProperty)
+        ));
+        nextImageButton.disableProperty().bind(scanTask.runningProperty().or(
+            Bindings.createBooleanBinding(() -> currentImageList.isEmpty() || currentImageIndexProperty.get() >= currentImageList.size() - 1,
+                                            currentImageList, currentImageIndexProperty)
+        ));
+
+
+        scanTask.setOnSucceeded(event -> {
+            List<TrackedFile> allFilesInDirectory = scanTask.getValue();
+            processScannedFiles(allFilesInDirectory); 
+            updateStatusBar(currentImageList.size() + " images loaded. " + (activeTagFilters.isEmpty() ? "" : "Filter active."));
+            // updateNavigationButtons() вызовется в конце processScannedFiles
+        });
+
+        scanTask.setOnFailed(event -> {
+            Throwable e = scanTask.getException();
+            logger.error("Failed to scan directory: {}", directory.getAbsolutePath(), e);
+            updateStatusBar("Error scanning directory: " + e.getMessage());
+            currentImageList.clear();
+            currentImageIndexProperty.set(-1); 
+            // this.currentImageIndex = -1; // Синхронизируется из property
+            currentlyDisplayedFile = null;
+            mainImageView.setImage(null);
+            if (rightToolbarController != null) {
+                rightToolbarController.setCurrentFile(null);
+            }
+            updateNavigationButtons();
+            // Сброс UI после ошибки - важно отвязать свойства, которые были привязаны к scanTask.runningProperty()
+            scanProgressIndicator.visibleProperty().unbind();
+            scanProgressIndicator.setVisible(false);
+            openFolderMenuItem.disableProperty().unbind();
+            openFolderMenuItem.setDisable(false);
+            fileMenu.disableProperty().unbind();
+            fileMenu.setDisable(false);
+            // Также отвязываем кнопки навигации, чтобы updateNavigationButtons мог ими управлять
+            previousImageButton.disableProperty().unbind();
+            nextImageButton.disableProperty().unbind();
+            updateNavigationButtons(); // Устанавливаем их состояние на основе текущих данных
+        });
+
+        new Thread(scanTask).start();
+    }
+
+    private void processScannedFiles(List<TrackedFile> allFilesInDirectory) {
         List<TrackedFile> filteredList;
         if (activeTagFilters == null || activeTagFilters.isEmpty()) {
-            filteredList = new ArrayList<>(allFilesInDirectory); // Нет фильтра, берем все
+            filteredList = new ArrayList<>(allFilesInDirectory);
         } else {
-            // Фильтруем список allFilesInDirectory
-            // Нам нужен метод в TrackedFileService для получения файлов по тегам,
-            // но т.к. мы уже получили все файлы, можем отфильтровать их локально
-            // или сделать более сложный запрос в DAO, если файлов очень много.
-            // Пока фильтруем локально (OR-логика: файл должен иметь хотя бы один из тегов фильтра)
             filteredList = allFilesInDirectory.stream()
                 .filter(trackedFile -> {
                     if (trackedFile.getTags() == null || trackedFile.getTags().isEmpty()) {
-                        return false; // Если у файла нет тегов, он не пройдет фильтр с тегами
+                        return false;
                     }
-                    // Проверяем, есть ли пересечение между тегами файла и тегами фильтра
                     return trackedFile.getTags().stream().anyMatch(activeTagFilters::contains);
                 })
                 .collect(Collectors.toList());
@@ -566,37 +607,35 @@ public class MainViewController {
                 allFilesInDirectory.size(), filteredList.size(), activeTagFilters.stream().map(Tag::getName).collect(Collectors.toList()));
         }
         
-        currentImageList = filteredList; // Обновляем основной список изображений
+        currentImageList.clear(); 
+        currentImageList.addAll(filteredList); 
+
+        currentImageIndexProperty.set(currentImageList.isEmpty() ? -1 : 0); 
+        // this.currentImageIndex = currentImageIndexProperty.get(); // Синхронизируется
 
         if (!currentImageList.isEmpty()) {
-            currentImageIndex = 0;
-            displayImageAtIndex(currentImageIndex);
+            displayImageAtIndex(currentImageIndexProperty.get());
         } else {
-            currentImageIndex = -1;
             currentlyDisplayedFile = null;
             mainImageView.setImage(null);
             if (rightToolbarController != null) {
                 rightToolbarController.setCurrentFile(null);
             }
-            updateNavigationButtons();
             if (activeTagFilters != null && !activeTagFilters.isEmpty()) {
-                 logger.info("No images found in directory {} matching the current tag filter.", directory.getAbsolutePath());
-                 // Можно показать сообщение пользователю, что по фильтру ничего нет
+                 logger.info("No images found matching the current tag filter.");
             } else {
-                 logger.info("No supported images found in directory: {}", directory.getAbsolutePath());
+                 logger.info("No supported images found in directory.");
             }
         }
+        updateNavigationButtons(); 
     }
 
     private void displayImageAtIndex(int index) {
+        currentImageIndexProperty.set(index); 
+        // this.currentImageIndex = index; // Синхронизируется
+
         if (index >= 0 && index < currentImageList.size()) {
             TrackedFile trackedFileToShow = currentImageList.get(index);
-
-            // Получаем актуальную версию файла с тегами из сервиса
-            // Это важно, так как FileScannerService мог вернуть объект без тегов
-            // или с неактуальными тегами, если мы не хотим грузить их все при сканировании.
-            // Но наш getOrCreateTrackedFile УЖЕ загружает теги.
-            // Для чистоты, можно всегда получать актуальный объект перед отображением.
             Optional<TrackedFile> freshFileOpt = trackedFileService.findByPathWithTags(trackedFileToShow.getAbsolutePath());
 
             if (freshFileOpt.isPresent()) {
@@ -618,7 +657,6 @@ public class MainViewController {
                     mainImageView.setImage(null);
                 }
 
-                // Уведомляем RightToolbarController о смене файла
                 if (rightToolbarController != null) {
                     rightToolbarController.setCurrentFile(currentlyDisplayedFile);
                 }
@@ -639,28 +677,58 @@ public class MainViewController {
             }
         }
         updateNavigationButtons();
+        
+        // Обновление статус-бара
+        if (currentlyDisplayedFile != null) {
+            updateStatusBar("Displaying: " + currentlyDisplayedFile.getName() + " (" + (currentImageIndexProperty.get() + 1) + "/" + currentImageList.size() + ")");
+        } else if (!currentImageList.isEmpty()){
+             updateStatusBar(currentImageList.size() + " images loaded. Select an image.");
+        } else if (currentOpenDirectory != null) {
+            if (activeTagFilters.isEmpty()) {
+                updateStatusBar("No images found in " + currentOpenDirectory.getName());
+            } else {
+                updateStatusBar("No images found in " + currentOpenDirectory.getName() + " matching filter.");
+            }
+        } else {
+             updateStatusBar("Ready. Open a folder.");
+        }
     }
 
 
     @FXML
     private void handlePreviousImage() {
-        if (currentImageIndex > 0) {
-            currentImageIndex--;
-            displayImageAtIndex(currentImageIndex);
+        if (currentImageIndexProperty.get() > 0) {
+            displayImageAtIndex(currentImageIndexProperty.get() - 1);
         }
     }
 
     @FXML
     private void handleNextImage() {
-        if (currentImageIndex < currentImageList.size() - 1) {
-            currentImageIndex++;
-            displayImageAtIndex(currentImageIndex);
+        if (currentImageIndexProperty.get() < currentImageList.size() - 1) {
+            displayImageAtIndex(currentImageIndexProperty.get() + 1);
         }
     }
 
     private void updateNavigationButtons() {
-        previousImageButton.setDisable(currentImageList.isEmpty() || currentImageIndex <= 0);
-        nextImageButton.setDisable(currentImageList.isEmpty() || currentImageIndex >= currentImageList.size() - 1);
+        Platform.runLater(() -> {
+            boolean isEmpty = currentImageList.isEmpty();
+            int currentIndex = currentImageIndexProperty.get(); 
+
+            // Если scanProgressIndicator НЕ видим (т.е. задача не запущена),
+            // то состояние кнопок зависит от списка и индекса.
+            // Если scanProgressIndicator ВИДИМ, то кнопки уже должны быть заблокированы
+            // через биндинг к scanTask.runningProperty().or(...)
+            // Поэтому дополнительная проверка scanProgressIndicator.isVisible() здесь не всегда нужна,
+            // если биндинги установлены правильно и не отвязываются без необходимости.
+            // Но для большей надежности, особенно после отвязки в setOnFailed, можно оставить:
+            if (scanProgressIndicator.isVisible()) {
+                previousImageButton.setDisable(true);
+                nextImageButton.setDisable(true);
+            } else {
+                previousImageButton.setDisable(isEmpty || currentIndex <= 0);
+                nextImageButton.setDisable(isEmpty || currentIndex >= currentImageList.size() - 1);
+            }
+        });
     }
 
     @FXML
@@ -777,6 +845,68 @@ public class LeftToolbarController {
                 tagFilterListView.getSelectionModel().select(tag);
             }
         }
+    }
+}
+
+
+--- File: src/main/java/com/example/imagetagger/ui/task/ScanDirectoryTask.java ---
+    package com.example.imagetagger.ui.task;
+
+import com.example.imagetagger.core.model.TrackedFile;
+import com.example.imagetagger.core.service.FileScannerService;
+import javafx.concurrent.Task;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.File;
+import java.util.List;
+import java.util.Set; // Если будем передавать фильтры
+
+public class ScanDirectoryTask extends Task<List<TrackedFile>> {
+
+    private static final Logger logger = LoggerFactory.getLogger(ScanDirectoryTask.class);
+
+    private final FileScannerService fileScannerService;
+    private final File directory;
+    // private final Set<Tag> activeTagFilters; // Если нужно передавать фильтры в сам таск
+
+    public ScanDirectoryTask(FileScannerService fileScannerService, File directory /*, Set<Tag> activeTagFilters */) {
+        this.fileScannerService = fileScannerService;
+        this.directory = directory;
+        // this.activeTagFilters = activeTagFilters;
+    }
+
+    @Override
+    protected List<TrackedFile> call() throws Exception {
+        logger.info("ScanDirectoryTask started for directory: {}", directory.getAbsolutePath());
+        updateMessage("Scanning directory: " + directory.getName() + "..."); // Обновляем сообщение для UI
+
+        // Здесь происходит основная работа
+        List<TrackedFile> allFilesInDirectory = fileScannerService.scanDirectoryForImages(directory);
+        
+        // Фильтрация может происходить здесь или после получения результата в MainViewController
+        // Если фильтровать здесь:
+        /*
+        if (activeTagFilters == null || activeTagFilters.isEmpty()) {
+            updateMessage("Found " + allFilesInDirectory.size() + " images.");
+            return allFilesInDirectory;
+        } else {
+            updateMessage("Filtering " + allFilesInDirectory.size() + " images by tags...");
+            List<TrackedFile> filteredList = allFilesInDirectory.stream()
+                .filter(trackedFile -> {
+                    if (trackedFile.getTags() == null || trackedFile.getTags().isEmpty()) {
+                        return false;
+                    }
+                    return trackedFile.getTags().stream().anyMatch(activeTagFilters::contains);
+                })
+                .collect(Collectors.toList());
+            updateMessage("Found " + filteredList.size() + " images matching filter.");
+            return filteredList;
+        }
+        */
+        updateMessage("Found " + allFilesInDirectory.size() + " images in " + directory.getName());
+        logger.info("ScanDirectoryTask finished. Found {} images.", allFilesInDirectory.size());
+        return allFilesInDirectory; // Пока возвращаем все, фильтрация в MainViewController
     }
 }
 
@@ -1348,6 +1478,7 @@ import java.io.InputStream;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Optional;
 
 public class FileHasher {
 
@@ -2038,24 +2169,27 @@ public class DatabaseManager {
 
 <?import javafx.geometry.Insets?>
 <?import javafx.scene.control.Button?>
+<?import javafx.scene.control.Label?> <!-- Добавлен импорт Label -->
 <?import javafx.scene.control.Menu?>
 <?import javafx.scene.control.MenuBar?>
 <?import javafx.scene.control.MenuItem?>
+<?import javafx.scene.control.ProgressIndicator?> <!-- Добавлен импорт ProgressIndicator -->
 <?import javafx.scene.image.ImageView?>
 <?import javafx.scene.layout.BorderPane?>
 <?import javafx.scene.layout.HBox?>
 <?import javafx.scene.layout.StackPane?>
+<?import javafx.scene.layout.VBox?> <!-- Добавлен импорт VBox -->
 
 <BorderPane xmlns="http://javafx.com/javafx/21"
             xmlns:fx="http://javafx.com/fxml/1"
             fx:controller="com.example.imagetagger.ui.controller.MainViewController"
             prefHeight="768.0" prefWidth="1024.0"
-            fx:id="rootPane"> <!-- Добавили fx:id для rootPane, если понадобится -->
+            fx:id="rootPane">
 
     <top>
         <MenuBar>
             <menus>
-                <Menu mnemonicParsing="false" text="File">
+                <Menu mnemonicParsing="false" text="File" fx:id="fileMenu"> <!-- Добавлен fx:id для меню -->
                     <items>
                         <MenuItem mnemonicParsing="false" text="Open Folder..." fx:id="openFolderMenuItem" onAction="#handleOpenFolder"/>
                         <MenuItem mnemonicParsing="false" text="Exit" onAction="#handleExit"/>
@@ -2071,17 +2205,25 @@ public class DatabaseManager {
     </top>
 
     <center>
-        <!-- StackPane для центрирования ImageView и возможности масштабирования -->
         <StackPane fx:id="imageViewHolder" style="-fx-background-color: #333333;">
             <ImageView fx:id="mainImageView" preserveRatio="true" smooth="true"/>
+            <!-- Индикатор прогресса, который будет по центру -->
+            <ProgressIndicator fx:id="scanProgressIndicator" visible="false" prefWidth="80" prefHeight="80"/>
         </StackPane>
     </center>
 
     <bottom>
-        <HBox alignment="CENTER" spacing="10" style="-fx-padding: 10;">
-            <Button fx:id="previousImageButton" text="Previous" onAction="#handlePreviousImage" disable="true"/>
-            <Button fx:id="nextImageButton" text="Next" onAction="#handleNextImage" disable="true"/>
-        </HBox>
+        <!-- Оборачиваем навигацию и статус-бар в VBox -->
+        <VBox spacing="5" alignment="CENTER_LEFT">
+            <padding>
+                <Insets top="5" right="10" bottom="5" left="10"/>
+            </padding>
+            <HBox alignment="CENTER" spacing="10">
+                <Button fx:id="previousImageButton" text="Previous" onAction="#handlePreviousImage" disable="true"/>
+                <Button fx:id="nextImageButton" text="Next" onAction="#handleNextImage" disable="true"/>
+            </HBox>
+            <Label fx:id="statusBarLabel" text="Ready."/> <!-- Наш статус-бар -->
+        </VBox>
     </bottom>
 
 </BorderPane>

@@ -7,6 +7,7 @@ file_paths = [
     'src/main/java/com/example/imagetagger/ui/controller/RightToolbarController.java',
     'src/main/java/com/example/imagetagger/ui/controller/MainViewController.java',
     'src/main/java/com/example/imagetagger/ui/controller/LeftToolbarController.java',
+    'src/main/java/com/example/imagetagger/ui/task/ScanDirectoryTask.java',
     'src/main/java/com/example/imagetagger/core/model/TrackedFile.java',
     'src/main/java/com/example/imagetagger/core/model/Tag.java',
     'src/main/java/com/example/imagetagger/core/service/TrackedFileService.java',
