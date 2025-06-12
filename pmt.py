@@ -6,6 +6,7 @@ file_paths = [
     'src/main/java/com/example/imagetagger/MainApplication.java',
     'src/main/java/com/example/imagetagger/ui/controller/RightToolbarController.java',
     'src/main/java/com/example/imagetagger/ui/controller/MainViewController.java',
+    'src/main/java/com/example/imagetagger/ui/controller/LeftToolbarController.java',
     'src/main/java/com/example/imagetagger/core/model/TrackedFile.java',
     'src/main/java/com/example/imagetagger/core/model/Tag.java',
     'src/main/java/com/example/imagetagger/core/service/TrackedFileService.java',
@@ -17,6 +18,7 @@ file_paths = [
     'src/main/java/com/example/imagetagger/persistence/dao/TagDAO.java',
     'src/main/java/com/example/imagetagger/persistence/DatabaseManager.java',
     'src/main/resources/com/example/imagetagger/fxml/RightToolbar.fxml',
+    'src/main/resources/com/example/imagetagger/fxml/LeftToolbar.fxml',
     'src/main/resources/com/example/imagetagger/fxml/MainView.fxml',
     'src/main/resources/logback.xml',
 ]

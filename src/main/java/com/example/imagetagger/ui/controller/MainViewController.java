@@ -26,8 +26,11 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import javafx.fxml.FXMLLoader; // Добавить этот импорт
 import javafx.scene.Parent;    // Добавить этот импорт
@@ -49,35 +52,73 @@ public class MainViewController {
     private List<TrackedFile> currentImageList = new ArrayList<>();
     private int currentImageIndex = -1;
     private RightToolbarController rightToolbarController;
+    private LeftToolbarController leftToolbarController;
     private TrackedFile currentlyDisplayedFile;
+
+    private File currentOpenDirectory;
+    // Добавить поле для хранения активных тегов фильтрации
+    private Set<Tag> activeTagFilters = new HashSet<>();
 
     @FXML
     public void initialize() {
         logger.info("MainViewController initialized.");
 
-        // --- Начало исправленного блока инициализации сервисов ---
-        // Создаем DAO один раз
         TrackedFileDAO trackedFileDAO = new TrackedFileDAO();
-        TagDAO tagDAO = new TagDAO(); // Создаем экземпляр TagDAO
+        TagDAO tagDAO = new TagDAO();
 
-        // Инициализируем сервисы, передавая им созданные DAO
-        this.tagService = new TagService(tagDAO); // TagService принимает TagDAO
-        FileTagLinkDAO fileTagLinkDAO = new FileTagLinkDAO(tagDAO); // FileTagLinkDAO принимает TagDAO
-
-        // TrackedFileService принимает TrackedFileDAO, FileTagLinkDAO и TagDAO
+        this.tagService = new TagService(tagDAO);
+        FileTagLinkDAO fileTagLinkDAO = new FileTagLinkDAO(tagDAO);
         this.trackedFileService = new TrackedFileService(trackedFileDAO, fileTagLinkDAO, tagDAO);
-        
         this.fileScannerService = new FileScannerService(this.trackedFileService);
-        // --- Конец исправленного блока инициализации сервисов ---
 
         mainImageView.fitWidthProperty().bind(imageViewHolder.widthProperty());
         mainImageView.fitHeightProperty().bind(imageViewHolder.heightProperty());
 
+        loadLeftToolbar(); // <<--- ДОБАВИТЬ ВЫЗОВ
         loadRightToolbar();
         
         if (rightToolbarController != null) {
-            // Передаем корректно инициализированные сервисы
             rightToolbarController.setServices(this.tagService, this.trackedFileService);
+        }
+        if (leftToolbarController != null) { // <<--- ДОБАВИТЬ БЛОК
+            leftToolbarController.setTagService(this.tagService);
+            leftToolbarController.setMainViewController(this);
+        }
+    }
+
+    private void loadLeftToolbar() { // <<--- ДОБАВИТЬ ЭТОТ МЕТОД
+        try {
+            FXMLLoader loader = new FXMLLoader(getClass().getResource("/com/example/imagetagger/fxml/LeftToolbar.fxml"));
+            Parent leftToolbarNode = loader.load();
+            leftToolbarController = loader.getController();
+            // leftToolbarController.setMainViewController(this); // Уже делается в initialize
+            // leftToolbarController.setTagService(this.tagService); // Уже делается в initialize
+            
+            rootPane.setLeft(leftToolbarNode);
+            logger.info("Left toolbar loaded successfully.");
+        } catch (Exception e) {
+            logger.error("Failed to load LeftToolbar.fxml", e);
+        }
+    }
+
+    public void applyTagFilter(Set<Tag> filterTags) {
+        logger.info("Tag filter received in MainViewController: {}", filterTags.stream().map(Tag::getName).collect(Collectors.toList()));
+        // Здесь будет логика применения фильтра
+        // 1. Сохранить текущие filterTags
+        // 2. Если currentImageList не пуст (т.е. папка уже была открыта),
+        //    перезагрузить или отфильтровать currentImageList на основе новой папки И этих тегов.
+        //    Для простоты, можно просто перезагрузить из текущей открытой папки с новым фильтром.
+        //    Или, если у нас есть File currentSelectedDirectory, использовать его.
+
+        // Пока что просто выведем лог и сохраним фильтр для будущего использования
+        this.activeTagFilters = filterTags; // Нужно будет объявить поле private Set<Tag> activeTagFilters;
+
+        // Если папка уже открыта, нужно перезагрузить список изображений с учетом фильтра
+        if (this.currentOpenDirectory != null) { // Нужно будет объявить поле private File currentOpenDirectory;
+            loadImagesFromDirectory(this.currentOpenDirectory); // Этот метод нужно будет модифицировать
+        } else {
+            // Если папка не открыта, фильтр применится при следующем открытии папки
+            logger.debug("No directory open, filter will be applied on next folder open.");
         }
     }
 
@@ -111,17 +152,51 @@ public class MainViewController {
 
     public void handleGlobalTagDeleted(Tag deletedTag) {
         logger.info("MainViewController notified of global tag deletion: {}", deletedTag.getName());
-        // Если текущий файл содержал этот тег, его список тегов в RightToolbarController
-        // уже должен был обновиться.
-        // Здесь мы могли бы обновить, например, фильтры, если бы они были.
-        // Или, если currentlyDisplayedFile хранил этот тег, его нужно обновить:
+        
+        // Обновляем список тегов для фильтрации на левой панели
+        if (leftToolbarController != null) {
+            leftToolbarController.refreshAvailableTags();
+        }
+
+        // Обновляем текущий активный фильтр, если удаленный тег был в нем
+        if (activeTagFilters != null && activeTagFilters.contains(deletedTag)) {
+            activeTagFilters.remove(deletedTag);
+            // Если папка открыта, перезагружаем/перефильтровываем список
+            if (this.currentOpenDirectory != null) {
+                loadImagesFromDirectory(this.currentOpenDirectory);
+            }
+        }
+        
+        // Обновляем теги текущего отображаемого файла (это уже делается в RightToolbarController,
+        // но для согласованности можно и здесь)
         if (currentlyDisplayedFile != null && currentlyDisplayedFile.getTags().contains(deletedTag)) {
-            currentlyDisplayedFile.removeTag(deletedTag); // Обновляем объект в памяти MainViewController
-            // RightToolbarController.setCurrentFile уже был вызван изнутри RightToolbarController
-            // при удалении тега из currentImageTagsObservableList, но для надежности можно:
+            currentlyDisplayedFile.removeTag(deletedTag);
              if (rightToolbarController != null) {
-                 rightToolbarController.setCurrentFile(currentlyDisplayedFile);
+                 // RightToolbarController сам обновит свой список currentImageTagsList
+                 // и возможно вызовет setCurrentFile, если это необходимо
+                 rightToolbarController.refreshTagLists(); // Обновит и "все теги" и "теги картинки"
              }
+        }
+    }
+
+    public void refreshAllTagViews() {
+        if (rightToolbarController != null) {
+            rightToolbarController.refreshTagLists(); // Обновляет теги на правой панели
+        }
+        if (leftToolbarController != null) {
+            leftToolbarController.refreshAvailableTags(); // Обновляет теги на левой панели
+        }
+        // Если текущий файл отображается, обновить его теги (на правой панели это уже должно было произойти)
+        if (currentlyDisplayedFile != null && rightToolbarController != null) {
+             Optional<TrackedFile> freshFileOpt = trackedFileService.findByPathWithTags(currentlyDisplayedFile.getAbsolutePath());
+             freshFileOpt.ifPresent(file -> {
+                 currentlyDisplayedFile = file; 
+                 rightToolbarController.setCurrentFile(currentlyDisplayedFile);
+             });
+        }
+        // Переприменить фильтр, если он активен и открыта папка
+        if (currentOpenDirectory != null && activeTagFilters != null && !activeTagFilters.isEmpty()) {
+            loadImagesFromDirectory(currentOpenDirectory);
         }
     }
 
@@ -129,12 +204,12 @@ public class MainViewController {
     private void handleOpenFolder() {
         DirectoryChooser directoryChooser = new DirectoryChooser();
         directoryChooser.setTitle("Open Image Folder");
-        // Пытаемся получить текущее окно для DirectoryChooser
         Stage stage = (Stage) rootPane.getScene().getWindow();
         File selectedDirectory = directoryChooser.showDialog(stage);
 
         if (selectedDirectory != null) {
             logger.info("Folder selected: {}", selectedDirectory.getAbsolutePath());
+            this.currentOpenDirectory = selectedDirectory; // Сохраняем выбранную папку
             loadImagesFromDirectory(selectedDirectory);
         } else {
             logger.info("No folder selected.");
@@ -142,20 +217,51 @@ public class MainViewController {
     }
 
     private void loadImagesFromDirectory(File directory) {
-        currentImageList = fileScannerService.scanDirectoryForImages(directory);
+        // Логика получения списка файлов от FileScannerService должна остаться прежней
+        // FileScannerService по-прежнему возвращает ВСЕ поддерживаемые файлы из папки
+        List<TrackedFile> allFilesInDirectory = fileScannerService.scanDirectoryForImages(directory);
+
+        List<TrackedFile> filteredList;
+        if (activeTagFilters == null || activeTagFilters.isEmpty()) {
+            filteredList = new ArrayList<>(allFilesInDirectory); // Нет фильтра, берем все
+        } else {
+            // Фильтруем список allFilesInDirectory
+            // Нам нужен метод в TrackedFileService для получения файлов по тегам,
+            // но т.к. мы уже получили все файлы, можем отфильтровать их локально
+            // или сделать более сложный запрос в DAO, если файлов очень много.
+            // Пока фильтруем локально (OR-логика: файл должен иметь хотя бы один из тегов фильтра)
+            filteredList = allFilesInDirectory.stream()
+                .filter(trackedFile -> {
+                    if (trackedFile.getTags() == null || trackedFile.getTags().isEmpty()) {
+                        return false; // Если у файла нет тегов, он не пройдет фильтр с тегами
+                    }
+                    // Проверяем, есть ли пересечение между тегами файла и тегами фильтра
+                    return trackedFile.getTags().stream().anyMatch(activeTagFilters::contains);
+                })
+                .collect(Collectors.toList());
+            logger.info("Filtered image list. Original: {}, Filtered: {}. Filter tags: {}",
+                allFilesInDirectory.size(), filteredList.size(), activeTagFilters.stream().map(Tag::getName).collect(Collectors.toList()));
+        }
+        
+        currentImageList = filteredList; // Обновляем основной список изображений
+
         if (!currentImageList.isEmpty()) {
             currentImageIndex = 0;
             displayImageAtIndex(currentImageIndex);
-            // updateNavigationButtons(); // Уже вызывается в displayImageAtIndex
         } else {
             currentImageIndex = -1;
-            currentlyDisplayedFile = null; // Очищаем текущий файл
+            currentlyDisplayedFile = null;
             mainImageView.setImage(null);
             if (rightToolbarController != null) {
-                rightToolbarController.setCurrentFile(null); // Уведомляем тулбар
+                rightToolbarController.setCurrentFile(null);
             }
             updateNavigationButtons();
-            logger.info("No supported images found in directory: {}", directory.getAbsolutePath());
+            if (activeTagFilters != null && !activeTagFilters.isEmpty()) {
+                 logger.info("No images found in directory {} matching the current tag filter.", directory.getAbsolutePath());
+                 // Можно показать сообщение пользователю, что по фильтру ничего нет
+            } else {
+                 logger.info("No supported images found in directory: {}", directory.getAbsolutePath());
+            }
         }
     }
 
