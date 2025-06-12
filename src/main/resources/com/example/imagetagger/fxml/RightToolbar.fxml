@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<?import javafx.geometry.Insets?>
+<?import javafx.scene.control.Button?>
+<?import javafx.scene.control.Label?>
+<?import javafx.scene.control.ListView?>
+<?import javafx.scene.control.TextField?>
+<?import javafx.scene.layout.VBox?>
+<?import javafx.scene.layout.HBox?>
+<?import javafx.scene.text.Font?>
+
+<VBox xmlns="http://javafx.com/javafx/21"
+      xmlns:fx="http://javafx.com/fxml/1"
+      fx:controller="com.example.imagetagger.ui.controller.RightToolbarController"
+      spacing="10" prefWidth="250" style="-fx-padding: 10;">
+
+    <Label text="Image Tags">
+        <font><Font name="System Bold" size="14.0" /></font>
+    </Label>
+    <ListView fx:id="currentImageTagsListView" prefHeight="150.0" />
+    <!-- Пока что этот ListView будет пуст, мы добавим его функциональность позже -->
+    <Button fx:id="removeTagFromImageButton" text="Remove Tag from Image" onAction="#handleRemoveTagFromImage" maxWidth="Infinity" disable="true"/>
+
+    <Label text="All Tags">
+        <font><Font name="System Bold" size="14.0" /></font>
+        <VBox.margin><Insets top="10.0" /></VBox.margin>
+    </Label>
+    <ListView fx:id="allTagsListView" prefHeight="200.0"/>
+
+    <HBox spacing="5" alignment="CENTER_LEFT">
+        <TextField fx:id="newTagTextField" promptText="New tag name" HBox.hgrow="ALWAYS"/>
+        <Button fx:id="addTagButton" text="Add" onAction="#handleAddGlobalTag"/> 
+    </HBox>
+    <Button fx:id="deleteTagButton" text="Delete Selected Tag" onAction="#handleDeleteSelectedTag" maxWidth="Infinity" disable="true"/>
+
+</VBox>

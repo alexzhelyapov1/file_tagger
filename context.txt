@@ -1,0 +1,1869 @@
+--- File: src/main/java/com/example/imagetagger/MainApplication.java ---
+package com.example.imagetagger;
+
+import com.example.imagetagger.persistence.DatabaseManager;
+import javafx.application.Application;
+import javafx.fxml.FXMLLoader;
+import javafx.scene.Parent;
+import javafx.scene.Scene;
+import javafx.stage.Stage;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.util.Objects;
+
+public class MainApplication extends Application {
+
+    private static final Logger logger = LoggerFactory.getLogger(MainApplication.class);
+
+    @Override
+    public void init() throws Exception {
+        super.init();
+        logger.info("Initializing application...");
+        try {
+            DatabaseManager.initializeDatabase();
+            logger.info("Database initialized successfully.");
+        } catch (Exception e) {
+            logger.error("Failed to initialize database", e);
+            // Решаем, что делать дальше: либо выбрасываем исключение, чтобы приложение не запустилось,
+            // либо пытаемся работать без БД (что для нашего приложения бессмысленно).
+            // Для начала, просто залогируем и продолжим, чтобы увидеть окно.
+            // В продакшене лучше показать пользователю ошибку и закрыться.
+        }
+    }
+
+    @Override
+    public void start(Stage primaryStage) {
+        logger.info("Starting JavaFX application...");
+        try {
+            FXMLLoader loader = new FXMLLoader(Objects.requireNonNull(getClass().getResource("/com/example/imagetagger/fxml/MainView.fxml")));
+            Parent root = loader.load();
+
+            Scene scene = new Scene(root, 1024, 768); // Зададим начальные размеры окна
+            primaryStage.setTitle("Image Tagger");
+            primaryStage.setScene(scene);
+            primaryStage.show();
+            logger.info("Application window shown.");
+
+        } catch (IOException e) {
+            logger.error("Failed to load MainView.fxml or initialize controller.", e);
+            // Показать пользователю сообщение об ошибке
+            // Platform.exit(); // Закрыть приложение, если основной FXML не загрузился
+        } catch (NullPointerException e) {
+            logger.error("Failed to find MainView.fxml. Check the path.", e);
+        }
+    }
+
+    @Override
+    public void stop() throws Exception {
+        super.stop();
+        logger.info("Application stopping.");
+        // Здесь можно добавить логику очистки ресурсов, если необходимо
+    }
+
+    public static void main(String[] args) {
+        launch(args);
+    }
+}
+
+
+--- File: src/main/java/com/example/imagetagger/ui/controller/RightToolbarController.java ---
+package com.example.imagetagger.ui.controller;
+
+import com.example.imagetagger.core.model.Tag;
+import com.example.imagetagger.core.model.TrackedFile;
+import com.example.imagetagger.core.service.TagService;
+import com.example.imagetagger.core.service.TrackedFileService; // Добавить импорт
+import javafx.collections.FXCollections;
+import javafx.collections.ObservableList;
+import javafx.fxml.FXML;
+import javafx.scene.control.*;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.MouseButton;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.Optional;
+import java.util.stream.Collectors;
+
+public class RightToolbarController {
+
+    private static final Logger logger = LoggerFactory.getLogger(RightToolbarController.class);
+
+    @FXML private ListView<Tag> currentImageTagsListView;
+    @FXML private Button removeTagFromImageButton;
+    @FXML private ListView<Tag> allTagsListView;
+    @FXML private TextField newTagTextField;
+    @FXML private Button addTagButton; // Кнопка для добавления нового тега в глобальный список
+    @FXML private Button deleteTagButton; // Кнопка для удаления тега из глобального списка
+
+    private TagService tagService;
+    private TrackedFileService trackedFileService; // Добавить сервис для работы с файлами
+
+    private final ObservableList<Tag> allTagsObservableList = FXCollections.observableArrayList();
+    private final ObservableList<Tag> currentImageTagsObservableList = FXCollections.observableArrayList();
+
+    private MainViewController mainViewController;
+    private TrackedFile currentTrackedFile; // Текущий открытый файл
+
+    public void setMainViewController(MainViewController mainViewController) {
+        this.mainViewController = mainViewController;
+    }
+
+    // Добавляем сеттер для TrackedFileService, если он будет инжектироваться извне
+    public void setServices(TagService tagService, TrackedFileService trackedFileService) {
+        this.tagService = tagService;
+        this.trackedFileService = trackedFileService;
+        // Загрузка тегов после установки сервисов
+        loadAllTags();
+    }
+
+
+    @FXML
+    public void initialize() {
+        logger.info("RightToolbarController initialized.");
+        // Сервисы будут установлены через setServices или можно инициализировать здесь,
+        // если нет DI извне (как мы делали ранее)
+        if (this.tagService == null) { // Проверка, чтобы не переинициализировать, если setServices был вызван
+            this.tagService = new TagService();
+        }
+        if (this.trackedFileService == null) {
+            this.trackedFileService = new TrackedFileService();
+        }
+
+
+        allTagsListView.setItems(allTagsObservableList);
+        currentImageTagsListView.setItems(currentImageTagsObservableList);
+
+        // Кнопка удаления глобального тега
+        deleteTagButton.disableProperty().bind(allTagsListView.getSelectionModel().selectedItemProperty().isNull());
+        // Кнопка удаления тега с изображения
+        removeTagFromImageButton.disableProperty().bind(
+            currentImageTagsListView.getSelectionModel().selectedItemProperty().isNull()
+            .or(currentImageTagsListView.itemsProperty().isNull()) // Также если список пуст
+            .or(currentImageTagsListView.itemsProperty().isNotNull().and(currentImageTagsListView.itemsProperty().get().emptyProperty()))
+        );
+
+
+        // Обработчик двойного клика на теге в "All Tags" для добавления к текущему изображению
+        allTagsListView.setOnMouseClicked(event -> {
+            if (event.getButton() == MouseButton.PRIMARY && event.getClickCount() == 2) {
+                Tag selectedTag = allTagsListView.getSelectionModel().getSelectedItem();
+                if (selectedTag != null && currentTrackedFile != null) {
+                    handleAddTagToCurrentImage(selectedTag);
+                }
+            }
+        });
+
+        // Обработчик нажатия Enter в поле нового тега
+        newTagTextField.setOnKeyPressed(event -> {
+            if (event.getCode() == KeyCode.ENTER) {
+                handleAddGlobalTag();
+            }
+        });
+        
+        loadAllTags(); // Загрузка всех тегов при инициализации
+    }
+
+    /**
+     * Вызывается из MainViewController при смене текущего изображения.
+     * @param trackedFile Новый текущий файл или null, если изображение очищено.
+     */
+    public void setCurrentFile(TrackedFile trackedFile) {
+        this.currentTrackedFile = trackedFile;
+        if (this.currentTrackedFile != null && this.currentTrackedFile.getId() > 0) {
+            // Загружаем теги для этого файла. TrackedFileService должен уметь это делать.
+            // Предположим, что TrackedFile, переданный сюда, уже содержит свои теги
+            // (загруженные в TrackedFileService.getOrCreateTrackedFile)
+            currentImageTagsObservableList.setAll(this.currentTrackedFile.getTags());
+            logger.info("Displaying {} tags for file: {}", currentImageTagsObservableList.size(), this.currentTrackedFile.getAbsolutePath());
+        } else {
+            currentImageTagsObservableList.clear();
+            logger.info("Current file is null or not persisted, clearing image tags list.");
+        }
+        // Обновляем доступность кнопки добавления тега к изображению
+        // (хотя мы добавляем двойным кликом, но если бы была кнопка)
+    }
+
+    private void loadAllTags() {
+        if (tagService == null) {
+            logger.warn("TagService not initialized in RightToolbarController. Cannot load tags.");
+            return;
+        }
+        allTagsObservableList.setAll(tagService.getAllTags());
+        FXCollections.sort(allTagsObservableList, (t1, t2) -> t1.getName().compareToIgnoreCase(t2.getName()));
+        logger.debug("Loaded {} tags into 'All Tags' list.", allTagsObservableList.size());
+    }
+
+    @FXML
+    private void handleAddGlobalTag() { // Переименовали из handleAddTag
+        String tagName = newTagTextField.getText().trim();
+        if (tagName.isEmpty()) {
+            showAlert(Alert.AlertType.WARNING, "Input Error", "Tag name cannot be empty.");
+            return;
+        }
+
+        Optional<Tag> createdTagOpt = tagService.createOrGetTag(tagName);
+        if (createdTagOpt.isPresent()) {
+            Tag tag = createdTagOpt.get();
+            if (!allTagsObservableList.contains(tag)) {
+                 allTagsObservableList.add(tag);
+                 FXCollections.sort(allTagsObservableList, (t1, t2) -> t1.getName().compareToIgnoreCase(t2.getName()));
+            }
+            allTagsListView.getSelectionModel().select(tag);
+            allTagsListView.scrollTo(tag); // Прокручиваем к добавленному/выбранному тегу
+            newTagTextField.clear();
+            logger.info("Global tag '{}' processed.", tagName);
+        } else {
+            showAlert(Alert.AlertType.ERROR, "Database Error", "Failed to create or retrieve global tag: " + tagName);
+        }
+    }
+
+    @FXML
+    private void handleDeleteSelectedTag() {
+        Tag selectedTag = allTagsListView.getSelectionModel().getSelectedItem();
+        if (selectedTag == null) {
+            showAlert(Alert.AlertType.WARNING, "Selection Error", "No global tag selected to delete.");
+            return;
+        }
+
+        // Запрос подтверждения перед удалением
+        Alert confirmationDialog = new Alert(Alert.AlertType.CONFIRMATION);
+        confirmationDialog.setTitle("Confirm Deletion");
+        confirmationDialog.setHeaderText("Delete Tag '" + selectedTag.getName() + "'?");
+        confirmationDialog.setContentText("This will remove the tag from all files and delete it permanently. Are you sure?");
+        Optional<ButtonType> result = confirmationDialog.showAndWait();
+
+        if (result.isPresent() && result.get() == ButtonType.OK) {
+            boolean deleted = tagService.deleteTag(selectedTag.getId());
+            if (deleted) {
+                allTagsObservableList.remove(selectedTag);
+                // Также нужно удалить этот тег из списка тегов текущего изображения, если он там есть
+                currentImageTagsObservableList.remove(selectedTag);
+                logger.info("Global tag '{}' (ID: {}) deleted.", selectedTag.getName(), selectedTag.getId());
+                // Если mainViewController существует, можно уведомить его,
+                // чтобы он, например, обновил фильтры, если они основаны на тегах
+                if (mainViewController != null) {
+                    mainViewController.handleGlobalTagDeleted(selectedTag);
+                }
+            } else {
+                showAlert(Alert.AlertType.ERROR, "Database Error", "Failed to delete global tag: " + selectedTag.getName());
+            }
+        }
+    }
+
+    private void handleAddTagToCurrentImage(Tag tagToAdd) {
+        if (currentTrackedFile == null || currentTrackedFile.getId() <= 0) {
+            showAlert(Alert.AlertType.WARNING, "No Image", "No image is currently open or image is not saved.");
+            return;
+        }
+        if (tagToAdd == null || tagToAdd.getId() <= 0) {
+            showAlert(Alert.AlertType.ERROR, "Invalid Tag", "Cannot add an invalid or unsaved tag.");
+            return;
+        }
+
+        // Проверяем, нет ли уже такого тега у файла
+        if (currentTrackedFile.getTags().stream().anyMatch(t -> t.getId() == tagToAdd.getId())) {
+            logger.debug("Tag '{}' already assigned to file '{}'. Skipping.", tagToAdd.getName(), currentTrackedFile.getName());
+            return; // Тег уже есть
+        }
+        
+        trackedFileService.addTagToFile(currentTrackedFile, tagToAdd);
+        // currentTrackedFile.getTags() должен был обновиться внутри addTagToFile,
+        // но для ObservableList нужно явное добавление, если не весь список переустанавливается.
+        currentImageTagsObservableList.add(tagToAdd);
+        FXCollections.sort(currentImageTagsObservableList, (t1, t2) -> t1.getName().compareToIgnoreCase(t2.getName()));
+        logger.info("Tag '{}' added to current image '{}'.", tagToAdd.getName(), currentTrackedFile.getName());
+    }
+
+
+    @FXML
+    private void handleRemoveTagFromImage() {
+        Tag selectedTag = currentImageTagsListView.getSelectionModel().getSelectedItem();
+        if (selectedTag == null) {
+            showAlert(Alert.AlertType.WARNING, "Selection Error", "No tag selected to remove from image.");
+            return;
+        }
+        if (currentTrackedFile == null || currentTrackedFile.getId() <= 0) {
+            logger.warn("Cannot remove tag, current file is not valid.");
+            return;
+        }
+
+        trackedFileService.removeTagFromFile(currentTrackedFile, selectedTag);
+        // currentTrackedFile.getTags() должен был обновиться внутри removeTagFromFile.
+        currentImageTagsObservableList.remove(selectedTag); // Обновляем UI
+        logger.info("Tag '{}' removed from current image '{}'.", selectedTag.getName(), currentTrackedFile.getName());
+    }
+
+
+    private void showAlert(Alert.AlertType alertType, String title, String message) {
+        Alert alert = new Alert(alertType);
+        alert.setTitle(title);
+        alert.setHeaderText(null);
+        alert.setContentText(message);
+        alert.showAndWait();
+    }
+
+    public void refreshTagLists() {
+        loadAllTags();
+        // Перезагрузка тегов для текущего файла, если он есть
+        if (currentTrackedFile != null && currentTrackedFile.getId() > 0) {
+            // Может понадобиться перезагрузить сам объект currentTrackedFile из сервиса,
+            // чтобы получить актуальные теги, если они изменились где-то еще.
+            // Но обычно RightToolbarController сам управляет тегами текущего файла.
+             Optional<TrackedFile> updatedFileOpt = trackedFileService.findByPathWithTags(currentTrackedFile.getAbsolutePath());
+             updatedFileOpt.ifPresent(this::setCurrentFile);
+        } else {
+             currentImageTagsObservableList.clear();
+        }
+    }
+}
+
+
+--- File: src/main/java/com/example/imagetagger/ui/controller/MainViewController.java ---
+package com.example.imagetagger.ui.controller;
+
+import com.example.imagetagger.core.model.TrackedFile;
+import com.example.imagetagger.core.model.Tag;
+import com.example.imagetagger.core.service.FileScannerService;
+import com.example.imagetagger.core.service.TagService;
+import com.example.imagetagger.core.service.TrackedFileService;
+import com.example.imagetagger.persistence.dao.FileTagLinkDAO;
+import com.example.imagetagger.persistence.dao.TrackedFileDAO;
+
+import javafx.application.Platform;
+import javafx.fxml.FXML;
+import javafx.scene.control.Button;
+import javafx.scene.control.MenuItem;
+import javafx.scene.image.Image;
+import javafx.scene.image.ImageView;
+import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.StackPane;
+import javafx.stage.DirectoryChooser;
+import javafx.stage.Stage;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+
+import javafx.fxml.FXMLLoader; // Добавить этот импорт
+import javafx.scene.Parent;    // Добавить этот импорт
+
+public class MainViewController {
+
+    private static final Logger logger = LoggerFactory.getLogger(MainViewController.class);
+
+    @FXML private BorderPane rootPane;
+    @FXML private ImageView mainImageView;
+    @FXML private StackPane imageViewHolder; // Родительский контейнер для ImageView
+    @FXML private Button previousImageButton;
+    @FXML private Button nextImageButton;
+    @FXML private MenuItem openFolderMenuItem; // Если нужно будет к нему обращаться
+
+    private FileScannerService fileScannerService;
+    private TrackedFileService trackedFileService; // Добавить это поле
+    private TagService tagService;
+    private List<TrackedFile> currentImageList = new ArrayList<>();
+    private int currentImageIndex = -1;
+    private RightToolbarController rightToolbarController;
+    private TrackedFile currentlyDisplayedFile;
+
+    // @FXML
+    // public void initialize() {
+    //     logger.info("MainViewController initialized.");
+    //     this.fileScannerService = new FileScannerService();
+
+    //     // Привязываем размер ImageView к размеру родительского StackPane
+    //     // чтобы изображение корректно масштабировалось при изменении размера окна.
+    //     mainImageView.fitWidthProperty().bind(imageViewHolder.widthProperty());
+    //     mainImageView.fitHeightProperty().bind(imageViewHolder.heightProperty());
+    // }
+
+    @FXML
+    public void initialize() {
+        logger.info("MainViewController initialized.");
+        // Инициализируем сервисы
+        this.tagService = new TagService();
+        this.trackedFileService = new TrackedFileService(new TrackedFileDAO(), new FileTagLinkDAO(tagService), tagService); // Явная инициализация DAO
+        this.fileScannerService = new FileScannerService(this.trackedFileService);
+
+        mainImageView.fitWidthProperty().bind(imageViewHolder.widthProperty());
+        mainImageView.fitHeightProperty().bind(imageViewHolder.heightProperty());
+
+        loadRightToolbar(); // Уже есть
+        // Передаем сервисы в rightToolbarController, если он использует setServices
+        if (rightToolbarController != null) {
+            rightToolbarController.setServices(this.tagService, this.trackedFileService);
+        }
+    }
+
+    private void loadRightToolbar() {
+        try {
+            FXMLLoader loader = new FXMLLoader(getClass().getResource("/com/example/imagetagger/fxml/RightToolbar.fxml"));
+            Parent rightToolbarNode = loader.load();
+            rightToolbarController = loader.getController(); // Получаем контроллер правой панели
+            rightToolbarController.setMainViewController(this); // Передаем ссылку на себя
+
+            rootPane.setRight(rightToolbarNode); // Устанавливаем в правую часть BorderPane
+            logger.info("Right toolbar loaded successfully.");
+        } catch (Exception e) {
+            logger.error("Failed to load RightToolbar.fxml", e);
+        }
+    }
+
+    public void refreshTagRelatedViews() {
+        if (rightToolbarController != null) {
+            rightToolbarController.refreshTagLists();
+        }
+        // Если текущий файл отображается, обновить его теги
+        if (currentlyDisplayedFile != null && rightToolbarController != null) {
+             Optional<TrackedFile> freshFileOpt = trackedFileService.findByPathWithTags(currentlyDisplayedFile.getAbsolutePath());
+             freshFileOpt.ifPresent(file -> {
+                 currentlyDisplayedFile = file; // Обновляем локальную копию
+                 rightToolbarController.setCurrentFile(currentlyDisplayedFile);
+             });
+        }
+    }
+
+    public void handleGlobalTagDeleted(Tag deletedTag) {
+        logger.info("MainViewController notified of global tag deletion: {}", deletedTag.getName());
+        // Если текущий файл содержал этот тег, его список тегов в RightToolbarController
+        // уже должен был обновиться.
+        // Здесь мы могли бы обновить, например, фильтры, если бы они были.
+        // Или, если currentlyDisplayedFile хранил этот тег, его нужно обновить:
+        if (currentlyDisplayedFile != null && currentlyDisplayedFile.getTags().contains(deletedTag)) {
+            currentlyDisplayedFile.removeTag(deletedTag); // Обновляем объект в памяти MainViewController
+            // RightToolbarController.setCurrentFile уже был вызван изнутри RightToolbarController
+            // при удалении тега из currentImageTagsObservableList, но для надежности можно:
+             if (rightToolbarController != null) {
+                 rightToolbarController.setCurrentFile(currentlyDisplayedFile);
+             }
+        }
+    }
+
+    @FXML
+    private void handleOpenFolder() {
+        DirectoryChooser directoryChooser = new DirectoryChooser();
+        directoryChooser.setTitle("Open Image Folder");
+        // Пытаемся получить текущее окно для DirectoryChooser
+        Stage stage = (Stage) rootPane.getScene().getWindow();
+        File selectedDirectory = directoryChooser.showDialog(stage);
+
+        if (selectedDirectory != null) {
+            logger.info("Folder selected: {}", selectedDirectory.getAbsolutePath());
+            loadImagesFromDirectory(selectedDirectory);
+        } else {
+            logger.info("No folder selected.");
+        }
+    }
+
+    private void loadImagesFromDirectory(File directory) {
+        currentImageList = fileScannerService.scanDirectoryForImages(directory);
+        if (!currentImageList.isEmpty()) {
+            currentImageIndex = 0;
+            displayImageAtIndex(currentImageIndex);
+            // updateNavigationButtons(); // Уже вызывается в displayImageAtIndex
+        } else {
+            currentImageIndex = -1;
+            currentlyDisplayedFile = null; // Очищаем текущий файл
+            mainImageView.setImage(null);
+            if (rightToolbarController != null) {
+                rightToolbarController.setCurrentFile(null); // Уведомляем тулбар
+            }
+            updateNavigationButtons();
+            logger.info("No supported images found in directory: {}", directory.getAbsolutePath());
+        }
+    }
+
+    private void displayImageAtIndex(int index) {
+        if (index >= 0 && index < currentImageList.size()) {
+            TrackedFile trackedFileToShow = currentImageList.get(index);
+
+            // Получаем актуальную версию файла с тегами из сервиса
+            // Это важно, так как FileScannerService мог вернуть объект без тегов
+            // или с неактуальными тегами, если мы не хотим грузить их все при сканировании.
+            // Но наш getOrCreateTrackedFile УЖЕ загружает теги.
+            // Для чистоты, можно всегда получать актуальный объект перед отображением.
+            Optional<TrackedFile> freshFileOpt = trackedFileService.findByPathWithTags(trackedFileToShow.getAbsolutePath());
+
+            if (freshFileOpt.isPresent()) {
+                currentlyDisplayedFile = freshFileOpt.get();
+                logger.info("Displaying image: {} (ID: {})", currentlyDisplayedFile.getAbsolutePath(), currentlyDisplayedFile.getId());
+                try (FileInputStream fis = new FileInputStream(currentlyDisplayedFile.getFile())) {
+                    Image image = new Image(fis);
+                    if (image.isError()) {
+                        logger.error("Error loading image: {}. Exception: {}", currentlyDisplayedFile.getAbsolutePath(), image.getException());
+                        mainImageView.setImage(null);
+                    } else {
+                        mainImageView.setImage(image);
+                    }
+                } catch (FileNotFoundException e) {
+                    logger.error("Image file not found: {}", currentlyDisplayedFile.getAbsolutePath(), e);
+                    mainImageView.setImage(null);
+                } catch (Exception e) {
+                    logger.error("Failed to load image: {}", currentlyDisplayedFile.getAbsolutePath(), e);
+                    mainImageView.setImage(null);
+                }
+
+                // Уведомляем RightToolbarController о смене файла
+                if (rightToolbarController != null) {
+                    rightToolbarController.setCurrentFile(currentlyDisplayedFile);
+                }
+            } else {
+                logger.error("Could not retrieve tracked file data for path: {}", trackedFileToShow.getAbsolutePath());
+                mainImageView.setImage(null);
+                currentlyDisplayedFile = null;
+                if (rightToolbarController != null) {
+                    rightToolbarController.setCurrentFile(null);
+                }
+            }
+        } else {
+            logger.warn("Attempted to display image at invalid index: {}", index);
+            mainImageView.setImage(null);
+            currentlyDisplayedFile = null;
+            if (rightToolbarController != null) {
+                rightToolbarController.setCurrentFile(null);
+            }
+        }
+        updateNavigationButtons();
+    }
+
+
+    @FXML
+    private void handlePreviousImage() {
+        if (currentImageIndex > 0) {
+            currentImageIndex--;
+            displayImageAtIndex(currentImageIndex);
+        }
+    }
+
+    @FXML
+    private void handleNextImage() {
+        if (currentImageIndex < currentImageList.size() - 1) {
+            currentImageIndex++;
+            displayImageAtIndex(currentImageIndex);
+        }
+    }
+
+    private void updateNavigationButtons() {
+        previousImageButton.setDisable(currentImageList.isEmpty() || currentImageIndex <= 0);
+        nextImageButton.setDisable(currentImageList.isEmpty() || currentImageIndex >= currentImageList.size() - 1);
+    }
+
+    @FXML
+    private void handleExit() {
+        Platform.exit();
+    }
+}
+
+
+--- File: src/main/java/com/example/imagetagger/core/model/TrackedFile.java ---
+package com.example.imagetagger.core.model;
+
+import java.io.File;
+import java.util.HashSet;
+import java.util.Objects;
+import java.util.Set;
+
+public class TrackedFile {
+    private long id; // Идентификатор из БД
+    private String absolutePath;
+    private File file; // Для удобства доступа к самому объекту File
+    private String contentHash;
+    private long sizeBytes;
+    private long modifiedDate; // Unix timestamp
+    private long lastSeenDate; // Unix timestamp
+
+    private Set<Tag> tags = new HashSet<>(); // Теги, присвоенные этому файлу
+
+    // Конструктор для нового файла, еще не сохраненного в БД
+    public TrackedFile(String absolutePath, String contentHash, long sizeBytes, long modifiedDate) {
+        this.absolutePath = absolutePath;
+        this.file = new File(absolutePath); // file создается здесь
+        this.contentHash = contentHash;
+        this.sizeBytes = sizeBytes;
+        this.modifiedDate = modifiedDate;
+        this.lastSeenDate = System.currentTimeMillis(); // Текущее время при создании/обнаружении
+    }
+
+    // Конструктор для файла, загруженного из БД
+    public TrackedFile(long id, String absolutePath, String contentHash, long sizeBytes, long modifiedDate, long lastSeenDate) {
+        this.id = id;
+        this.absolutePath = absolutePath;
+        this.file = new File(absolutePath); // file создается здесь
+        this.contentHash = contentHash;
+        this.sizeBytes = sizeBytes;
+        this.modifiedDate = modifiedDate;
+        this.lastSeenDate = lastSeenDate;
+    }
+
+    // Геттеры и Сеттеры
+    public long getId() {
+        return id;
+    }
+
+    public void setId(long id) {
+        this.id = id;
+    }
+
+    public String getAbsolutePath() {
+        return absolutePath;
+    }
+
+    public void setAbsolutePath(String absolutePath) {
+        this.absolutePath = absolutePath;
+        this.file = new File(absolutePath); // Обновляем file при смене пути
+    }
+
+    public File getFile() {
+        // Ленивая инициализация или обновление, если путь мог измениться
+        if (this.file == null || !this.file.getAbsolutePath().equals(this.absolutePath)) {
+            this.file = new File(this.absolutePath);
+        }
+        return file;
+    }
+    
+    // Явно устанавливать File не будем, он должен быть производным от absolutePath
+
+    public String getName() {
+        return getFile().getName();
+    }
+
+    public String getContentHash() {
+        return contentHash;
+    }
+
+    public void setContentHash(String contentHash) {
+        this.contentHash = contentHash;
+    }
+
+    public long getSizeBytes() {
+        return sizeBytes;
+    }
+
+    public void setSizeBytes(long sizeBytes) {
+        this.sizeBytes = sizeBytes;
+    }
+
+    public long getModifiedDate() {
+        return modifiedDate;
+    }
+
+    public void setModifiedDate(long modifiedDate) {
+        this.modifiedDate = modifiedDate;
+    }
+
+    public long getLastSeenDate() {
+        return lastSeenDate;
+    }
+
+    public void setLastSeenDate(long lastSeenDate) {
+        this.lastSeenDate = lastSeenDate;
+    }
+
+    public Set<Tag> getTags() {
+        return tags;
+    }
+
+    public void setTags(Set<Tag> tags) {
+        this.tags = tags != null ? new HashSet<>(tags) : new HashSet<>();
+    }
+
+    public void addTag(Tag tag) {
+        if (tag != null) {
+            this.tags.add(tag);
+        }
+    }
+
+    public void removeTag(Tag tag) {
+        if (tag != null) {
+            this.tags.remove(tag);
+        }
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        TrackedFile that = (TrackedFile) o;
+        // Если оба объекта имеют ID (из БД), сравниваем по ID
+        if (id > 0 && that.id > 0) {
+            return id == that.id;
+        }
+        // Иначе (например, при сравнении нового объекта с существующим или двух новых)
+        // сравниваем по абсолютному пути, так как он должен быть уникальным для файла на диске
+        return Objects.equals(absolutePath, that.absolutePath);
+    }
+
+    @Override
+    public int hashCode() {
+        // Если ID есть, используем его для хэша
+        if (id > 0) {
+            return Objects.hash(id);
+        }
+        // Иначе используем абсолютный путь
+        return Objects.hash(absolutePath);
+    }
+
+    @Override
+    public String toString() {
+        return "TrackedFile{" +
+               "id=" + id +
+               ", absolutePath='" + absolutePath + '\'' +
+               // ", tags=" + tags.size() + // Раскомментировать для отладки, если нужно
+               '}';
+    }
+}
+
+
+--- File: src/main/java/com/example/imagetagger/core/model/Tag.java ---
+package com.example.imagetagger.core.model;
+
+import java.util.Objects;
+
+public class Tag {
+    private long id; // Идентификатор из БД
+    private String name;
+
+    // Конструктор для создания нового тега (id еще не присвоен)
+    public Tag(String name) {
+        this.name = name;
+    }
+
+    // Конструктор для тега, загруженного из БД (с id)
+    public Tag(long id, String name) {
+        this.id = id;
+        this.name = name;
+    }
+
+    public long getId() {
+        return id;
+    }
+
+    public void setId(long id) {
+        this.id = id;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        Tag tag = (Tag) o;
+        // Теги считаются одинаковыми, если у них одинаковое имя (игнорируя регистр)
+        // или если у них одинаковый id (если он установлен, т.е. > 0)
+        if (id > 0 && tag.id > 0) {
+            return id == tag.id;
+        }
+        return name.equalsIgnoreCase(tag.name);
+    }
+
+    @Override
+    public int hashCode() {
+        // Используем имя в нижнем регистре для хэш-кода, чтобы соответствовать equals
+        return Objects.hash(name.toLowerCase());
+    }
+
+    @Override
+    public String toString() {
+        // Это будет отображаться в ListView, поэтому только имя
+        return name;
+    }
+}
+
+
+--- File: src/main/java/com/example/imagetagger/core/service/TrackedFileService.java ---
+package com.example.imagetagger.core.service;
+
+import com.example.imagetagger.core.model.Tag;
+import com.example.imagetagger.core.model.TrackedFile;
+import com.example.imagetagger.persistence.dao.FileTagLinkDAO;
+import com.example.imagetagger.persistence.dao.TagDAO;
+import com.example.imagetagger.persistence.dao.TrackedFileDAO;
+import com.example.imagetagger.util.FileHasher; // Убедитесь, что FileHasher создан и импортирован
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.util.Optional;
+import java.util.Set;
+
+public class TrackedFileService {
+    private static final Logger logger = LoggerFactory.getLogger(TrackedFileService.class);
+
+    private final TrackedFileDAO trackedFileDAO;
+    private final FileTagLinkDAO fileTagLinkDAO;
+    private final TagDAO tagDAO; // Нужен для создания/получения тегов по имени
+
+    public TrackedFileService() {
+        // В реальном приложении здесь была бы инъекция зависимостей
+        this.trackedFileDAO = new TrackedFileDAO();
+        this.tagDAO = new TagDAO();
+        this.fileTagLinkDAO = new FileTagLinkDAO(this.tagDAO); // FileTagLinkDAO может зависеть от TagDAO
+    }
+
+    // Конструктор для DI (например, для тестов)
+    public TrackedFileService(TrackedFileDAO trackedFileDAO, FileTagLinkDAO fileTagLinkDAO, TagDAO tagDAO) {
+        this.trackedFileDAO = trackedFileDAO;
+        this.fileTagLinkDAO = fileTagLinkDAO;
+        this.tagDAO = tagDAO;
+    }
+
+    /**
+     * Получает или создает TrackedFile для указанного файла на диске.
+     * Если файл уже есть в БД по пути, он загружается.
+     * Если файла нет, он создается, вычисляется хэш, и файл сохраняется в БД.
+     * Теги для файла также загружаются.
+     *
+     * @param diskFile Файл на диске.
+     * @return Optional с TrackedFile, или Optional.empty() если произошла ошибка.
+     */
+    public Optional<TrackedFile> getOrCreateTrackedFile(File diskFile) {
+        if (diskFile == null || !diskFile.exists() || !diskFile.isFile()) {
+            logger.warn("Invalid file provided to getOrCreateTrackedFile: {}", diskFile);
+            return Optional.empty();
+        }
+
+        String absolutePath = diskFile.getAbsolutePath();
+
+        // 1. Попытка найти файл в БД по пути
+        Optional<TrackedFile> existingFileOpt = trackedFileDAO.getByPath(absolutePath);
+
+        if (existingFileOpt.isPresent()) {
+            TrackedFile trackedFile = existingFileOpt.get();
+            // Проверка, не изменился ли файл (размер, дата модификации)
+            // (Эту логику можно усложнить, как мы обсуждали ранее, с хэшами и т.д.)
+            try {
+                BasicFileAttributes attrs = Files.readAttributes(diskFile.toPath(), BasicFileAttributes.class);
+                long currentSize = attrs.size();
+                long currentModDate = attrs.lastModifiedTime().toMillis();
+
+                boolean needsUpdate = false;
+                if (trackedFile.getSizeBytes() != currentSize || trackedFile.getModifiedDate() != currentModDate) {
+                    logger.info("File {} has changed on disk. Updating metadata.", absolutePath);
+                    trackedFile.setSizeBytes(currentSize);
+                    trackedFile.setModifiedDate(currentModDate);
+                    // Пересчитываем хэш, если файл изменился
+                    FileHasher.calculateSHA256(diskFile).ifPresent(trackedFile::setContentHash);
+                    needsUpdate = true;
+                }
+                trackedFile.setLastSeenDate(System.currentTimeMillis());
+                if (needsUpdate) {
+                    trackedFileDAO.update(trackedFile);
+                }
+            } catch (IOException e) {
+                logger.error("Could not read file attributes for {}: {}", absolutePath, e.getMessage());
+                // Продолжаем с тем, что есть в БД, или можно вернуть empty
+            }
+
+            // Загружаем теги для существующего файла
+            trackedFile.setTags(fileTagLinkDAO.getTagsForFile(trackedFile.getId()));
+            logger.debug("Found existing TrackedFile: {} with {} tags", trackedFile, trackedFile.getTags().size());
+            return Optional.of(trackedFile);
+        } else {
+            // 2. Файла нет в БД по этому пути, создаем новый
+            logger.info("File {} not found in DB by path. Creating new entry.", absolutePath);
+            Optional<String> hashOpt = FileHasher.calculateSHA256(diskFile);
+            if (hashOpt.isEmpty()) {
+                logger.error("Could not calculate hash for new file: {}", absolutePath);
+                return Optional.empty(); // Не можем создать файл без хэша
+            }
+
+            try {
+                BasicFileAttributes attrs = Files.readAttributes(diskFile.toPath(), BasicFileAttributes.class);
+                TrackedFile newTrackedFile = new TrackedFile(
+                        absolutePath,
+                        hashOpt.get(),
+                        attrs.size(),
+                        attrs.lastModifiedTime().toMillis()
+                );
+                // Попытка сохранить в БД
+                Optional<TrackedFile> createdFileOpt = trackedFileDAO.create(newTrackedFile);
+                if (createdFileOpt.isPresent()) {
+                    TrackedFile createdFile = createdFileOpt.get();
+                    // Новый файл по определению не имеет тегов, так что getTagsForFile не нужен
+                    logger.info("Created new TrackedFile: {}", createdFile);
+                    return Optional.of(createdFile);
+                } else {
+                    // Это может случиться, если при создании возникла гонка или другая ошибка
+                    // Попробуем еще раз найти по пути, вдруг его кто-то создал параллельно
+                    return trackedFileDAO.getByPath(absolutePath);
+                }
+            } catch (IOException e) {
+                logger.error("Could not read file attributes for new file {}: {}", absolutePath, e.getMessage());
+                return Optional.empty();
+            }
+        }
+    }
+
+    public void addTagToFile(TrackedFile file, Tag tag) {
+        if (file == null || tag == null || file.getId() <= 0 || tag.getId() <= 0) {
+            logger.warn("Invalid file or tag provided for linking. File: {}, Tag: {}", file, tag);
+            return;
+        }
+        if (fileTagLinkDAO.linkTagToFile(file.getId(), tag.getId())) {
+            file.addTag(tag); // Обновляем объект в памяти
+            logger.info("Tag '{}' added to file '{}'", tag.getName(), file.getAbsolutePath());
+        }
+    }
+
+    public void removeTagFromFile(TrackedFile file, Tag tag) {
+        if (file == null || tag == null || file.getId() <= 0 || tag.getId() <= 0) {
+            logger.warn("Invalid file or tag provided for unlinking. File: {}, Tag: {}", file, tag);
+            return;
+        }
+        if (fileTagLinkDAO.unlinkTagFromFile(file.getId(), tag.getId())) {
+            file.removeTag(tag); // Обновляем объект в памяти
+            logger.info("Tag '{}' removed from file '{}'", tag.getName(), file.getAbsolutePath());
+        }
+    }
+
+    /**
+     * Устанавливает (заменяет) набор тегов для файла.
+     * @param file Файл, которому присваиваются теги.
+     * @param tags Набор тегов. Убедитесь, что все теги в наборе имеют корректный ID (т.е. сохранены в БД).
+     */
+    public void setTagsForFile(TrackedFile file, Set<Tag> tags) {
+        if (file == null || file.getId() <= 0) {
+            logger.warn("Cannot set tags for null or unsaved file: {}", file);
+            return;
+        }
+        // Убедимся, что все теги имеют ID. Если нет, их нужно сначала сохранить.
+        // Для простоты, здесь предполагаем, что TagService уже позаботился об этом.
+        for (Tag tag : tags) {
+            if (tag.getId() <= 0) {
+                Optional<Tag> persistedTag = tagDAO.getByName(tag.getName()); // или createOrGetTag
+                if (persistedTag.isPresent()) {
+                    tag.setId(persistedTag.get().getId()); // Обновляем ID в объекте
+                } else {
+                     logger.error("Cannot set unsaved tag '{}' (ID missing) for file {}", tag.getName(), file.getAbsolutePath());
+                     // Возможно, стоит выбросить исключение или пропустить этот тег.
+                     return; // Прерываем операцию, если тег не может быть сохранен/найден.
+                }
+            }
+        }
+
+        fileTagLinkDAO.replaceTagsForFile(file.getId(), tags);
+        file.setTags(tags); // Обновляем объект в памяти
+        logger.info("Set {} tags for file '{}'", tags.size(), file.getAbsolutePath());
+    }
+
+    public Optional<TrackedFile> findByPathWithTags(String absolutePath) {
+        Optional<TrackedFile> fileOpt = trackedFileDAO.getByPath(absolutePath);
+        fileOpt.ifPresent(tf -> tf.setTags(fileTagLinkDAO.getTagsForFile(tf.getId())));
+        return fileOpt;
+    }
+    
+    public void updateLastSeen(TrackedFile file) {
+        if (file != null && file.getId() > 0) {
+            file.setLastSeenDate(System.currentTimeMillis());
+            trackedFileDAO.update(file); // Обновляем только last_seen_date (и другие поля, если они изменились)
+        }
+    }
+}
+
+
+--- File: src/main/java/com/example/imagetagger/core/service/FileScannerService.java ---
+package com.example.imagetagger.core.service;
+
+import com.example.imagetagger.core.model.TrackedFile;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Collections;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+public class FileScannerService {
+
+    private static final Logger logger = LoggerFactory.getLogger(FileScannerService.class);
+    private static final List<String> SUPPORTED_EXTENSIONS = List.of(".png"); // Пока только PNG
+
+    private final TrackedFileService trackedFileService;
+
+    public FileScannerService(TrackedFileService trackedFileService) {
+        this.trackedFileService = trackedFileService;
+    }
+
+    public List<TrackedFile> scanDirectoryForImages(File directory) {
+        if (directory == null || !directory.isDirectory()) {
+            logger.warn("Provided path is not a directory or is null: {}", directory);
+            return Collections.emptyList();
+        }
+
+        logger.info("Scanning directory for images: {}", directory.getAbsolutePath());
+        try (Stream<Path> stream = Files.walk(directory.toPath(), 1)) { // Глубина поиска 1
+            return stream
+                    .filter(Files::isRegularFile)
+                    .filter(path -> {
+                        String fileName = path.getFileName().toString().toLowerCase();
+                        return SUPPORTED_EXTENSIONS.stream().anyMatch(fileName::endsWith);
+                    })
+                    .map(path -> {
+                        // Используем TrackedFileService для получения или создания TrackedFile
+                        Optional<TrackedFile> trackedFileOpt = trackedFileService.getOrCreateTrackedFile(path.toFile());
+                        trackedFileOpt.ifPresent(trackedFileService::updateLastSeen); // Обновляем last_seen_date
+                        return trackedFileOpt.orElse(null); // Возвращаем null, если не удалось получить/создать
+                    })
+                    .filter(Objects::nonNull) // Отфильтровываем null значения (если были ошибки)
+                    .sorted((f1, f2) -> f1.getName().compareToIgnoreCase(f2.getName())) // Сортировка по имени
+                    .collect(Collectors.toList());
+        } catch (IOException e) {
+            logger.error("Error scanning directory: {}", directory.getAbsolutePath(), e);
+            return Collections.emptyList();
+        }
+    }
+}
+
+
+--- File: src/main/java/com/example/imagetagger/core/service/TagService.java ---
+package com.example.imagetagger.core.service;
+
+import com.example.imagetagger.core.model.Tag;
+import com.example.imagetagger.persistence.dao.TagDAO;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.Collections;
+import java.util.List;
+import java.util.Optional;
+
+public class TagService {
+    private static final Logger logger = LoggerFactory.getLogger(TagService.class);
+    private final TagDAO tagDAO;
+
+    public TagService() {
+        this.tagDAO = new TagDAO(); // В более сложных приложениях можно использовать DI
+    }
+
+    // Для тестов можно передавать mock DAO
+    public TagService(TagDAO tagDAO) {
+        this.tagDAO = tagDAO;
+    }
+
+    /**
+     * Создает новый тег. Если тег с таким именем (регистронезависимо) уже существует,
+     * возвращает существующий тег.
+     *
+     * @param name Имя тега.
+     * @return Optional с созданным или существующим тегом, или Optional.empty() если произошла ошибка.
+     */
+    public Optional<Tag> createOrGetTag(String name) {
+        if (name == null || name.trim().isEmpty()) {
+            logger.warn("Attempted to create a tag with empty or null name.");
+            return Optional.empty();
+        }
+        String trimmedName = name.trim();
+
+        // Проверяем, существует ли тег с таким именем (регистронезависимо)
+        Optional<Tag> existingTag = tagDAO.getByName(trimmedName);
+        if (existingTag.isPresent()) {
+            logger.info("Tag '{}' already exists, returning existing one.", trimmedName);
+            return existingTag;
+        }
+
+        // Если не существует, создаем новый
+        return tagDAO.create(trimmedName);
+    }
+
+    public List<Tag> getAllTags() {
+        try {
+            return tagDAO.getAll();
+        } catch (Exception e) {
+            logger.error("Failed to retrieve all tags.", e);
+            return Collections.emptyList();
+        }
+    }
+
+    public boolean deleteTag(long tagId) {
+        if (tagId <= 0) {
+            logger.warn("Attempted to delete tag with invalid id: {}", tagId);
+            return false;
+        }
+        // Дополнительная логика (например, проверка, используется ли тег) может быть здесь
+        // Но так как у нас ON DELETE CASCADE, это не так критично для целостности данных.
+        return tagDAO.delete(tagId);
+    }
+
+    public Optional<Tag> findTagByName(String name) {
+        if (name == null || name.trim().isEmpty()) {
+            return Optional.empty();
+        }
+        return tagDAO.getByName(name.trim());
+    }
+}
+
+
+--- File: src/main/java/com/example/imagetagger/util/FileHasher.java ---
+package com.example.imagetagger.util;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.security.DigestInputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+
+public class FileHasher {
+
+    private static final Logger logger = LoggerFactory.getLogger(FileHasher.class);
+    private static final String HASH_ALGORITHM = "SHA-256";
+
+    public static Optional<String> calculateSHA256(File file) {
+        if (file == null || !file.exists() || !file.isFile()) {
+            logger.warn("Cannot calculate hash for non-existent or non-file: {}", file);
+            return Optional.empty();
+        }
+
+        try {
+            MessageDigest md = MessageDigest.getInstance(HASH_ALGORITHM);
+            try (InputStream is = new FileInputStream(file);
+                 DigestInputStream dis = new DigestInputStream(is, md)) {
+                // Читаем файл, чтобы DigestInputStream мог вычислить хэш
+                //noinspection StatementWithEmptyBody
+                while (dis.read() != -1) ; // Пустое тело цикла, просто читаем
+                // Для больших файлов лучше читать буфером:
+                // byte[] buffer = new byte[8192];
+                // while (dis.read(buffer) != -1) ;
+            }
+            byte[] digest = md.digest();
+            return Optional.of(bytesToHex(digest));
+        } catch (NoSuchAlgorithmException e) {
+            logger.error("Hash algorithm {} not found.", HASH_ALGORITHM, e);
+            // Это не должно произойти для SHA-256
+            return Optional.empty();
+        } catch (IOException e) {
+            logger.error("Error reading file to calculate hash: {}", file.getAbsolutePath(), e);
+            return Optional.empty();
+        }
+    }
+
+    private static String bytesToHex(byte[] hash) {
+        StringBuilder hexString = new StringBuilder(2 * hash.length);
+        for (byte b : hash) {
+            String hex = Integer.toHexString(0xff & b);
+            if (hex.length() == 1) {
+                hexString.append('0');
+            }
+            hexString.append(hex);
+        }
+        return hexString.toString();
+    }
+}
+
+
+--- File: src/main/java/com/example/imagetagger/persistence/dao/TrackedFileDAO.java ---
+package com.example.imagetagger.persistence.dao;
+
+import com.example.imagetagger.core.model.TrackedFile;
+import com.example.imagetagger.persistence.DatabaseManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.sql.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+
+public class TrackedFileDAO {
+    private static final Logger logger = LoggerFactory.getLogger(TrackedFileDAO.class);
+
+    public Optional<TrackedFile> create(TrackedFile file) {
+        String sql = "INSERT INTO tracked_files(absolute_path, content_hash, size_bytes, modified_date, last_seen_date) " +
+                     "VALUES(?, ?, ?, ?, ?)";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+
+            pstmt.setString(1, file.getAbsolutePath());
+            pstmt.setString(2, file.getContentHash());
+            pstmt.setLong(3, file.getSizeBytes());
+            pstmt.setLong(4, file.getModifiedDate());
+            pstmt.setLong(5, file.getLastSeenDate());
+
+            int affectedRows = pstmt.executeUpdate();
+            if (affectedRows == 0) {
+                logger.warn("Creating tracked file failed, no rows affected for path: {}", file.getAbsolutePath());
+                return Optional.empty();
+            }
+
+            try (ResultSet generatedKeys = pstmt.getGeneratedKeys()) {
+                if (generatedKeys.next()) {
+                    file.setId(generatedKeys.getLong(1));
+                    logger.info("TrackedFile created: {}", file);
+                    return Optional.of(file);
+                } else {
+                    logger.warn("Creating tracked file failed, no ID obtained for path: {}", file.getAbsolutePath());
+                    return Optional.empty();
+                }
+            }
+        } catch (SQLException e) {
+            // SQLITE_CONSTRAINT_UNIQUE (код 19) если absolute_path уже существует
+            if (e.getErrorCode() == 19 && e.getMessage().contains("UNIQUE constraint failed: tracked_files.absolute_path")) {
+                 logger.warn("TrackedFile with path '{}' already exists in DB.", file.getAbsolutePath());
+            } else {
+                logger.error("Error creating tracked file with path: {}", file.getAbsolutePath(), e);
+            }
+            return Optional.empty();
+        }
+    }
+
+    public boolean update(TrackedFile file) {
+        String sql = "UPDATE tracked_files SET absolute_path = ?, content_hash = ?, size_bytes = ?, " +
+                     "modified_date = ?, last_seen_date = ? WHERE id = ?";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+
+            pstmt.setString(1, file.getAbsolutePath());
+            pstmt.setString(2, file.getContentHash());
+            pstmt.setLong(3, file.getSizeBytes());
+            pstmt.setLong(4, file.getModifiedDate());
+            pstmt.setLong(5, file.getLastSeenDate());
+            pstmt.setLong(6, file.getId());
+
+            int affectedRows = pstmt.executeUpdate();
+            if (affectedRows > 0) {
+                logger.info("TrackedFile updated: {}", file);
+                return true;
+            }
+        } catch (SQLException e) {
+             // SQLITE_CONSTRAINT_UNIQUE (код 19) если absolute_path уже существует и это не этот же файл
+            if (e.getErrorCode() == 19 && e.getMessage().contains("UNIQUE constraint failed: tracked_files.absolute_path")) {
+                 logger.warn("Failed to update TrackedFile. Path '{}' might already exist for another entry.", file.getAbsolutePath());
+            } else {
+                logger.error("Error updating tracked file: {}", file, e);
+            }
+        }
+        return false;
+    }
+
+    public Optional<TrackedFile> getById(long id) {
+        String sql = "SELECT * FROM tracked_files WHERE id = ?";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setLong(1, id);
+            ResultSet rs = pstmt.executeQuery();
+            if (rs.next()) {
+                return Optional.of(mapRowToTrackedFile(rs));
+            }
+        } catch (SQLException e) {
+            logger.error("Error fetching tracked file by id: {}", id, e);
+        }
+        return Optional.empty();
+    }
+
+    public Optional<TrackedFile> getByPath(String absolutePath) {
+        String sql = "SELECT * FROM tracked_files WHERE absolute_path = ?";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, absolutePath);
+            ResultSet rs = pstmt.executeQuery();
+            if (rs.next()) {
+                return Optional.of(mapRowToTrackedFile(rs));
+            }
+        } catch (SQLException e) {
+            logger.error("Error fetching tracked file by path: {}", absolutePath, e);
+        }
+        return Optional.empty();
+    }
+    
+    public List<TrackedFile> getByContentHash(String contentHash) {
+        List<TrackedFile> files = new ArrayList<>();
+        String sql = "SELECT * FROM tracked_files WHERE content_hash = ?";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, contentHash);
+            ResultSet rs = pstmt.executeQuery();
+            while (rs.next()) {
+                files.add(mapRowToTrackedFile(rs));
+            }
+        } catch (SQLException e) {
+            logger.error("Error fetching tracked files by content hash: {}", contentHash, e);
+        }
+        return files;
+    }
+
+    public List<TrackedFile> getAll() {
+        List<TrackedFile> files = new ArrayList<>();
+        String sql = "SELECT * FROM tracked_files ORDER BY absolute_path";
+        try (Connection conn = DatabaseManager.getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(sql)) {
+            while (rs.next()) {
+                files.add(mapRowToTrackedFile(rs));
+            }
+        } catch (SQLException e) {
+            logger.error("Error fetching all tracked files", e);
+        }
+        return files;
+    }
+
+    public boolean delete(long id) {
+        String sql = "DELETE FROM tracked_files WHERE id = ?";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setLong(1, id);
+            int affectedRows = pstmt.executeUpdate();
+             if (affectedRows > 0) {
+                logger.info("TrackedFile deleted with id: {}", id);
+                return true;
+            }
+        } catch (SQLException e) {
+            logger.error("Error deleting tracked file with id: {}", id, e);
+        }
+        return false;
+    }
+
+    private TrackedFile mapRowToTrackedFile(ResultSet rs) throws SQLException {
+        return new TrackedFile(
+                rs.getLong("id"),
+                rs.getString("absolute_path"),
+                rs.getString("content_hash"),
+                rs.getLong("size_bytes"),
+                rs.getLong("modified_date"),
+                rs.getLong("last_seen_date")
+        );
+    }
+}
+
+
+--- File: src/main/java/com/example/imagetagger/persistence/dao/FileTagLinkDAO.java ---
+package com.example.imagetagger.persistence.dao;
+
+import com.example.imagetagger.core.model.Tag;
+import com.example.imagetagger.core.model.TrackedFile;
+import com.example.imagetagger.persistence.DatabaseManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.HashSet;
+import java.util.Set;
+
+public class FileTagLinkDAO {
+    private static final Logger logger = LoggerFactory.getLogger(FileTagLinkDAO.class);
+    private final TagDAO tagDAO; // Нужен для получения объектов Tag по ID
+
+    public FileTagLinkDAO() {
+        this.tagDAO = new TagDAO(); // Или инъекция зависимости
+    }
+    
+    public FileTagLinkDAO(TagDAO tagDAO) {
+        this.tagDAO = tagDAO;
+    }
+
+
+    public boolean linkTagToFile(long fileId, long tagId) {
+        String sql = "INSERT OR IGNORE INTO file_tag_links(file_id, tag_id) VALUES(?, ?)";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setLong(1, fileId);
+            pstmt.setLong(2, tagId);
+            int affectedRows = pstmt.executeUpdate();
+            if (affectedRows > 0) {
+                logger.info("Linked fileId {} to tagId {}", fileId, tagId);
+                return true;
+            } else {
+                // Это может произойти, если связь уже существует (из-за INSERT OR IGNORE)
+                logger.debug("Link between fileId {} and tagId {} already exists or failed.", fileId, tagId);
+                return false; // или true, если "уже существует" считается успехом
+            }
+        } catch (SQLException e) {
+            logger.error("Error linking fileId {} to tagId {}", fileId, tagId, e);
+            return false;
+        }
+    }
+
+    public boolean unlinkTagFromFile(long fileId, long tagId) {
+        String sql = "DELETE FROM file_tag_links WHERE file_id = ? AND tag_id = ?";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setLong(1, fileId);
+            pstmt.setLong(2, tagId);
+            int affectedRows = pstmt.executeUpdate();
+            if (affectedRows > 0) {
+                logger.info("Unlinked fileId {} from tagId {}", fileId, tagId);
+                return true;
+            }
+        } catch (SQLException e) {
+            logger.error("Error unlinking fileId {} from tagId {}", fileId, tagId, e);
+        }
+        return false;
+    }
+
+    public Set<Tag> getTagsForFile(long fileId) {
+        Set<Tag> tags = new HashSet<>();
+        // Используем JOIN для получения имен тегов сразу, но можно и просто tag_id, а потом дергать TagDAO
+        String sql = "SELECT t.id, t.name FROM tags t " +
+                     "JOIN file_tag_links ftl ON t.id = ftl.tag_id " +
+                     "WHERE ftl.file_id = ?";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setLong(1, fileId);
+            ResultSet rs = pstmt.executeQuery();
+            while (rs.next()) {
+                tags.add(new Tag(rs.getLong("id"), rs.getString("name")));
+            }
+        } catch (SQLException e) {
+            logger.error("Error fetching tags for fileId {}", fileId, e);
+        }
+        return tags;
+    }
+
+    public Set<TrackedFile> getFilesForTag(long tagId) {
+        Set<TrackedFile> files = new HashSet<>();
+        // Для этого метода нам понадобится TrackedFileDAO, чтобы сконструировать объекты TrackedFile.
+        // Пока оставим заглушку или простой вариант, если TrackedFileDAO будет доступен.
+        // Проще всего вернуть Set<Long> fileIds, а TrackedFileService сам получит объекты.
+        // Либо, если мы передадим сюда TrackedFileDAO:
+        // String sql = "SELECT tf.* FROM tracked_files tf " +
+        //              "JOIN file_tag_links ftl ON tf.id = ftl.file_id " +
+        //              "WHERE ftl.tag_id = ?";
+        // ... и затем использовать mapRowToTrackedFile из TrackedFileDAO (если сделать его public static или передать DAO)
+        logger.warn("getFilesForTag(long tagId) not fully implemented yet in FileTagLinkDAO.");
+        // Пример реализации, если бы TrackedFileDAO был доступен и имел public mapRowToTrackedFile
+        /*
+        TrackedFileDAO trackedFileDAO = new TrackedFileDAO(); // Не очень хорошо, лучше DI
+        String sql = "SELECT tf.* FROM tracked_files tf " +
+                     "JOIN file_tag_links ftl ON tf.id = ftl.file_id " +
+                     "WHERE ftl.tag_id = ?";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setLong(1, tagId);
+            ResultSet rs = pstmt.executeQuery();
+            while (rs.next()) {
+                // Предполагая, что mapRowToTrackedFile статический или DAO инжектирован
+                // files.add(TrackedFileDAO.mapRowToTrackedFile(rs)); // Пример
+            }
+        } catch (SQLException e) {
+            logger.error("Error fetching files for tagId {}", tagId, e);
+        }
+        */
+        return files;
+    }
+
+    /**
+     * Заменяет все текущие теги для файла на новый набор тегов.
+     * Это делается в транзакции: сначала удаляются все старые связи, потом добавляются новые.
+     * @param fileId ID файла
+     * @param tags Новый набор тегов для файла.
+     */
+    public void replaceTagsForFile(long fileId, Set<Tag> tags) {
+        String deleteAllLinksSql = "DELETE FROM file_tag_links WHERE file_id = ?";
+        String insertLinkSql = "INSERT INTO file_tag_links(file_id, tag_id) VALUES(?, ?)";
+
+        Connection conn = null;
+        try {
+            conn = DatabaseManager.getConnection();
+            conn.setAutoCommit(false); // Начинаем транзакцию
+
+            // 1. Удаляем все существующие связи для этого файла
+            try (PreparedStatement deleteStmt = conn.prepareStatement(deleteAllLinksSql)) {
+                deleteStmt.setLong(1, fileId);
+                deleteStmt.executeUpdate();
+            }
+
+            // 2. Добавляем новые связи
+            if (tags != null && !tags.isEmpty()) {
+                try (PreparedStatement insertStmt = conn.prepareStatement(insertLinkSql)) {
+                    for (Tag tag : tags) {
+                        if (tag.getId() <= 0) { // Убедимся, что тег имеет ID (т.е. сохранен в БД)
+                            logger.warn("Attempted to link unsaved tag (ID <=0): {} to fileId: {}", tag.getName(), fileId);
+                            continue;
+                        }
+                        insertStmt.setLong(1, fileId);
+                        insertStmt.setLong(2, tag.getId());
+                        insertStmt.addBatch();
+                    }
+                    insertStmt.executeBatch();
+                }
+            }
+            conn.commit(); // Завершаем транзакцию успешно
+            logger.info("Replaced tags for fileId {}. New tag count: {}", fileId, tags != null ? tags.size() : 0);
+
+        } catch (SQLException e) {
+            logger.error("Error replacing tags for fileId {}", fileId, e);
+            if (conn != null) {
+                try {
+                    conn.rollback(); // Откатываем транзакцию в случае ошибки
+                } catch (SQLException ex) {
+                    logger.error("Error rolling back transaction for fileId {}", fileId, ex);
+                }
+            }
+        } finally {
+            if (conn != null) {
+                try {
+                    conn.setAutoCommit(true); // Возвращаем режим автокоммита
+                    conn.close();
+                } catch (SQLException e) {
+                    logger.error("Error closing connection after replacing tags for fileId {}", fileId, e);
+                }
+            }
+        }
+    }
+}
+
+
+--- File: src/main/java/com/example/imagetagger/persistence/dao/TagDAO.java ---
+package com.example.imagetagger.persistence.dao;
+
+import com.example.imagetagger.core.model.Tag;
+import com.example.imagetagger.persistence.DatabaseManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.sql.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+
+public class TagDAO {
+    private static final Logger logger = LoggerFactory.getLogger(TagDAO.class);
+
+    public Optional<Tag> create(String name) {
+        String sql = "INSERT INTO tags(name) VALUES(?)";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+            pstmt.setString(1, name);
+            int affectedRows = pstmt.executeUpdate();
+
+            if (affectedRows == 0) {
+                logger.warn("Creating tag failed, no rows affected for name: {}", name);
+                return Optional.empty();
+            }
+
+            try (ResultSet generatedKeys = pstmt.getGeneratedKeys()) {
+                if (generatedKeys.next()) {
+                    Tag newTag = new Tag(generatedKeys.getLong(1), name);
+                    logger.info("Tag created: {}", newTag);
+                    return Optional.of(newTag);
+                } else {
+                    logger.warn("Creating tag failed, no ID obtained for name: {}", name);
+                    return Optional.empty();
+                }
+            }
+        } catch (SQLException e) {
+            // SQLITE_CONSTRAINT_UNIQUE (код 19) если имя уже существует
+            if (e.getErrorCode() == 19 && e.getMessage().contains("UNIQUE constraint failed: tags.name")) {
+                logger.warn("Tag with name '{}' already exists.", name);
+            } else {
+                logger.error("Error creating tag with name: {}", name, e);
+            }
+            return Optional.empty();
+        }
+    }
+
+    public Optional<Tag> getById(long id) {
+        String sql = "SELECT id, name FROM tags WHERE id = ?";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setLong(1, id);
+            ResultSet rs = pstmt.executeQuery();
+            if (rs.next()) {
+                return Optional.of(new Tag(rs.getLong("id"), rs.getString("name")));
+            }
+        } catch (SQLException e) {
+            logger.error("Error fetching tag by id: {}", id, e);
+        }
+        return Optional.empty();
+    }
+
+    public Optional<Tag> getByName(String name) {
+        // Поиск регистронезависимый благодаря COLLATE NOCASE
+        String sql = "SELECT id, name FROM tags WHERE name = ? COLLATE NOCASE";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, name);
+            ResultSet rs = pstmt.executeQuery();
+            if (rs.next()) {
+                // Возвращаем тег с именем, как оно хранится в БД (для сохранения регистра)
+                return Optional.of(new Tag(rs.getLong("id"), rs.getString("name")));
+            }
+        } catch (SQLException e) {
+            logger.error("Error fetching tag by name: {}", name, e);
+        }
+        return Optional.empty();
+    }
+
+    public List<Tag> getAll() {
+        List<Tag> tags = new ArrayList<>();
+        String sql = "SELECT id, name FROM tags ORDER BY name COLLATE NOCASE"; // Сортируем для удобства
+        try (Connection conn = DatabaseManager.getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(sql)) {
+            while (rs.next()) {
+                tags.add(new Tag(rs.getLong("id"), rs.getString("name")));
+            }
+        } catch (SQLException e) {
+            logger.error("Error fetching all tags", e);
+        }
+        return tags;
+    }
+
+    // Обновление не очень актуально для тегов, т.к. обычно меняется только связь с файлом.
+    // Если нужно будет переименовывать теги, тогда добавить. Пока пропустим.
+    // public boolean update(Tag tag) { ... }
+
+    public boolean delete(long id) {
+        // При удалении тега, связи в file_tag_links удалятся автоматически благодаря ON DELETE CASCADE
+        String sql = "DELETE FROM tags WHERE id = ?";
+        try (Connection conn = DatabaseManager.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setLong(1, id);
+            int affectedRows = pstmt.executeUpdate();
+            if (affectedRows > 0) {
+                logger.info("Tag deleted with id: {}", id);
+                return true;
+            }
+        } catch (SQLException e) {
+            logger.error("Error deleting tag with id: {}", id, e);
+        }
+        return false;
+    }
+}
+
+
+--- File: src/main/java/com/example/imagetagger/persistence/DatabaseManager.java ---
+package com.example.imagetagger.persistence;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.File;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.SQLException;
+import java.sql.Statement;
+
+public class DatabaseManager {
+    private static final Logger logger = LoggerFactory.getLogger(DatabaseManager.class);
+
+    // Используем System.getProperty("user.home") для создания папки в домашней директории пользователя
+    // Это более кроссплатформенно, чем %APPDATA% или ~/.ImageTagger напрямую
+    private static final String APP_DATA_FOLDER_NAME = ".ImageTagger"; // С точкой для скрытия в Unix-like системах
+    private static final String DB_FILE_NAME = "image_tagger_data.sqlite";
+
+    private static String getDbFolderPath() {
+        String homeDir = System.getProperty("user.home");
+        return homeDir + File.separator + APP_DATA_FOLDER_NAME;
+    }
+
+    private static String getDbUrl() {
+        return "jdbc:sqlite:" + getDbFolderPath() + File.separator + DB_FILE_NAME;
+    }
+
+
+    public static Connection getConnection() throws SQLException {
+        File dbFolder = new File(getDbFolderPath());
+        if (!dbFolder.exists()) {
+            if (dbFolder.mkdirs()) {
+                logger.info("Application data folder created: {}", dbFolder.getAbsolutePath());
+            } else {
+                logger.error("Failed to create application data folder: {}", dbFolder.getAbsolutePath());
+                // Можно выбросить исключение или обработать ошибку иначе
+            }
+        }
+        logger.debug("Attempting to connect to database at: {}", getDbUrl());
+        return DriverManager.getConnection(getDbUrl());
+    }
+
+    public static void initializeDatabase() {
+        String createTagsTable = "CREATE TABLE IF NOT EXISTS tags ("
+                + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                + "name TEXT UNIQUE NOT NULL"
+                + ");";
+
+        String createTrackedFilesTable = "CREATE TABLE IF NOT EXISTS tracked_files ("
+                + "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                + "absolute_path TEXT UNIQUE NOT NULL,"
+                + "content_hash TEXT NOT NULL,"
+                + "size_bytes INTEGER NOT NULL,"
+                + "modified_date INTEGER NOT NULL," // Храним как Unix timestamp (long)
+                + "last_seen_date INTEGER NOT NULL" // Храним как Unix timestamp (long)
+                + ");";
+
+        String createFileTagLinksTable = "CREATE TABLE IF NOT EXISTS file_tag_links ("
+                + "file_id INTEGER NOT NULL,"
+                + "tag_id INTEGER NOT NULL,"
+                + "PRIMARY KEY (file_id, tag_id),"
+                + "FOREIGN KEY (file_id) REFERENCES tracked_files(id) ON DELETE CASCADE,"
+                + "FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE"
+                + ");";
+
+        String createIndexPathOnTrackedFiles = "CREATE INDEX IF NOT EXISTS idx_tracked_files_path ON tracked_files (absolute_path);";
+        String createIndexHashOnTrackedFiles = "CREATE INDEX IF NOT EXISTS idx_tracked_files_hash ON tracked_files (content_hash);";
+        String createIndexTagName = "CREATE INDEX IF NOT EXISTS idx_tags_name ON tags (name);";
+
+
+        try (Connection conn = getConnection(); // getConnection() теперь создает папку, если нужно
+             Statement stmt = conn.createStatement()) {
+            logger.info("Initializing database schema...");
+            stmt.execute(createTagsTable);
+            logger.debug("Table 'tags' ensured.");
+            stmt.execute(createTrackedFilesTable);
+            logger.debug("Table 'tracked_files' ensured.");
+            stmt.execute(createFileTagLinksTable);
+            logger.debug("Table 'file_tag_links' ensured.");
+            stmt.execute(createIndexPathOnTrackedFiles);
+            logger.debug("Index 'idx_tracked_files_path' ensured.");
+            stmt.execute(createIndexHashOnTrackedFiles);
+            logger.debug("Index 'idx_tracked_files_hash' ensured.");
+            stmt.execute(createIndexTagName);
+            logger.debug("Index 'idx_tags_name' ensured.");
+            logger.info("Database schema initialization complete.");
+        } catch (SQLException e) {
+            logger.error("Failed to initialize database schema.", e);
+            // Перебрасываем как RuntimeException, т.к. без БД приложение не может работать корректно
+            throw new RuntimeException("Failed to initialize database schema", e);
+        }
+    }
+}
+
+
+--- File: src/main/resources/com/example/imagetagger/fxml/RightToolbar.fxml ---
+<?xml version="1.0" encoding="UTF-8"?>
+
+<?import javafx.geometry.Insets?>
+<?import javafx.scene.control.Button?>
+<?import javafx.scene.control.Label?>
+<?import javafx.scene.control.ListView?>
+<?import javafx.scene.control.TextField?>
+<?import javafx.scene.layout.VBox?>
+<?import javafx.scene.layout.HBox?>
+<?import javafx.scene.text.Font?>
+
+<VBox xmlns="http://javafx.com/javafx/21"
+      xmlns:fx="http://javafx.com/fxml/1"
+      fx:controller="com.example.imagetagger.ui.controller.RightToolbarController"
+      spacing="10" prefWidth="250" style="-fx-padding: 10;">
+
+    <Label text="Image Tags">
+        <font><Font name="System Bold" size="14.0" /></font>
+    </Label>
+    <ListView fx:id="currentImageTagsListView" prefHeight="150.0" />
+    <!-- Пока что этот ListView будет пуст, мы добавим его функциональность позже -->
+    <Button fx:id="removeTagFromImageButton" text="Remove Tag from Image" onAction="#handleRemoveTagFromImage" maxWidth="Infinity" disable="true"/>
+
+    <Label text="All Tags">
+        <font><Font name="System Bold" size="14.0" /></font>
+        <VBox.margin><Insets top="10.0" /></VBox.margin>
+    </Label>
+    <ListView fx:id="allTagsListView" prefHeight="200.0"/>
+
+    <HBox spacing="5" alignment="CENTER_LEFT">
+        <TextField fx:id="newTagTextField" promptText="New tag name" HBox.hgrow="ALWAYS"/>
+        <Button fx:id="addTagButton" text="Add" onAction="#handleAddTag"/>
+    </HBox>
+    <Button fx:id="deleteTagButton" text="Delete Selected Tag" onAction="#handleDeleteSelectedTag" maxWidth="Infinity" disable="true"/>
+
+</VBox>
+
+
+--- File: src/main/resources/com/example/imagetagger/fxml/MainView.fxml ---
+<?xml version="1.0" encoding="UTF-8"?>
+
+<?import javafx.geometry.Insets?>
+<?import javafx.scene.control.Button?>
+<?import javafx.scene.control.Menu?>
+<?import javafx.scene.control.MenuBar?>
+<?import javafx.scene.control.MenuItem?>
+<?import javafx.scene.image.ImageView?>
+<?import javafx.scene.layout.BorderPane?>
+<?import javafx.scene.layout.HBox?>
+<?import javafx.scene.layout.StackPane?>
+
+<BorderPane xmlns="http://javafx.com/javafx/21"
+            xmlns:fx="http://javafx.com/fxml/1"
+            fx:controller="com.example.imagetagger.ui.controller.MainViewController"
+            prefHeight="768.0" prefWidth="1024.0"
+            fx:id="rootPane"> <!-- Добавили fx:id для rootPane, если понадобится -->
+
+    <top>
+        <MenuBar>
+            <menus>
+                <Menu mnemonicParsing="false" text="File">
+                    <items>
+                        <MenuItem mnemonicParsing="false" text="Open Folder..." fx:id="openFolderMenuItem" onAction="#handleOpenFolder"/>
+                        <MenuItem mnemonicParsing="false" text="Exit" onAction="#handleExit"/>
+                    </items>
+                </Menu>
+                <Menu mnemonicParsing="false" text="Help">
+                    <items>
+                        <MenuItem mnemonicParsing="false" text="About"/>
+                    </items>
+                </Menu>
+            </menus>
+        </MenuBar>
+    </top>
+
+    <center>
+        <!-- StackPane для центрирования ImageView и возможности масштабирования -->
+        <StackPane fx:id="imageViewHolder" style="-fx-background-color: #333333;">
+            <ImageView fx:id="mainImageView" preserveRatio="true" smooth="true"/>
+        </StackPane>
+    </center>
+
+    <bottom>
+        <HBox alignment="CENTER" spacing="10" style="-fx-padding: 10;">
+            <Button fx:id="previousImageButton" text="Previous" onAction="#handlePreviousImage" disable="true"/>
+            <Button fx:id="nextImageButton" text="Next" onAction="#handleNextImage" disable="true"/>
+        </HBox>
+    </bottom>
+
+</BorderPane>
+
+
+--- File: src/main/resources/logback.xml ---
+<configuration>
+
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Устанавливаем уровень логирования для нашего приложения -->
+    <!-- Можно поставить DEBUG для более детальных логов во время разработки -->
+    <logger name="com.example.imagetagger" level="INFO" />
+
+    <!-- Уровень логирования для библиотек, например, Hibernate или Spring, если бы они были -->
+    <!-- <logger name="org.hibernate" level="INFO" /> -->
+    <!-- <logger name="org.springframework" level="INFO" /> -->
+
+    <!-- Корневой логгер -->
+    <root level="WARN"> <!-- По умолчанию WARN для всего остального, чтобы не засорять консоль -->
+        <appender-ref ref="STDOUT" />
+    </root>
+
+</configuration>
+
+

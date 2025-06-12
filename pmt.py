@@ -3,16 +3,22 @@ import os
 # 1. Список путей до файлов (относительные пути)
 # Замените этот список своими путями к файлам
 file_paths = [
-    'pom.xml',
-
-    'src/test/java/com/azapps/matrixapp/model/MatrixTest.java',
-    'src/main/java/com/azapps/matrixapp/model/MatrixOperationException.java',
-    'src/main/java/com/azapps/matrixapp/model/Matrix.java',
-    'src/main/java/com/azapps/matrixapp/controller/MainViewController.java',
-    'src/main/java/com/azapps/matrixapp/MainApp.java',
-    'src/main/java/module-info.java',
-    'src/main/resources/com/azapps/matrixapp/view/MainView.fxml',
-    'src/main/resources/com/azapps/matrixapp/css/styles.css',
+    'src/main/java/com/example/imagetagger/MainApplication.java',
+    'src/main/java/com/example/imagetagger/ui/controller/RightToolbarController.java',
+    'src/main/java/com/example/imagetagger/ui/controller/MainViewController.java',
+    'src/main/java/com/example/imagetagger/core/model/TrackedFile.java',
+    'src/main/java/com/example/imagetagger/core/model/Tag.java',
+    'src/main/java/com/example/imagetagger/core/service/TrackedFileService.java',
+    'src/main/java/com/example/imagetagger/core/service/FileScannerService.java',
+    'src/main/java/com/example/imagetagger/core/service/TagService.java',
+    'src/main/java/com/example/imagetagger/util/FileHasher.java',
+    'src/main/java/com/example/imagetagger/persistence/dao/TrackedFileDAO.java',
+    'src/main/java/com/example/imagetagger/persistence/dao/FileTagLinkDAO.java',
+    'src/main/java/com/example/imagetagger/persistence/dao/TagDAO.java',
+    'src/main/java/com/example/imagetagger/persistence/DatabaseManager.java',
+    'src/main/resources/com/example/imagetagger/fxml/RightToolbar.fxml',
+    'src/main/resources/com/example/imagetagger/fxml/MainView.fxml',
+    'src/main/resources/logback.xml',
 ]
 
 # Имя выходного файла
